@@ -1,0 +1,56 @@
+# create.template for MediaWiki 1.17
+#  2011-08-09
+mkdir {MWFCODEDIR}
+mkdir {MWFCONFDIR}/{WIKILABEL}
+# create the data directories
+mkdir {MWFDATADIR}
+mkdir {MWFDATADIR}/images
+owner {WEBUSER} {MWFDATADIR}/images
+permission 750 {MWFDATADIR}/images
+# create the directory for the complex extensions
+mkdir {MWFCODEDIR}/complexextensions
+owner {WEBUSER} {MWFCODEDIR}/complexextensions
+permission 750 {MWFCODEDIR}/complexextensions
+# now the brunt of the code gets symlinked
+# directories:
+symlink {SOURCEDIR}/bin {MWFCODEDIR}
+mkdir {MWFCODEDIR}/config
+owner {WEBUSER} {MWFCODEDIR}/config
+permission 750 {MWFCODEDIR}/config
+symlink {SOURCEDIR}/cache {MWFCODEDIR}
+optional symlink {SOURCEDIR}/docs {MWFCODEDIR}
+symlink {SOURCEDIR}/extensions {MWFCODEDIR}
+symlink {MWFDATADIR}/images {MWFCODEDIR}
+symlink {MWFDATADIR}/images/banner {MWFCODEDIR}
+symlink {SOURCEDIR}/includes {MWFCODEDIR}
+symlink {SOURCEDIR}/languages {MWFCODEDIR}
+symlink {SOURCEDIR}/maintenance {MWFCODEDIR}
+symlink {SOURCEDIR}/math {MWFCODEDIR}
+symlink {SOURCEDIR}/resources {MWFCODEDIR}
+symlink {SOURCEDIR}/serialized {MWFCODEDIR}
+symlink {SOURCEDIR}/skins {MWFCODEDIR}
+symlink {SOURCEDIR}/mw-config {MWFCODEDIR}
+# and files:
+copy {SOURCEDIR}/config/index* {MWFCODEDIR}/config
+symlink {SOURCEDIR}/*.phtml {MWFCODEDIR}
+symlink {SOURCEDIR}/*.inc {MWFCODEDIR}
+symlink {SOURCEDIR}/*.php5 {MWFCODEDIR}
+symlink {SOURCEDIR}/a*.php {MWFCODEDIR}
+symlink {SOURCEDIR}/i*.php {MWFCODEDIR}
+symlink {SOURCEDIR}/l*.php {MWFCODEDIR}
+optional symlink {SOURCEDIR}/Makefile {MWFCODEDIR}
+symlink {SOURCEDIR}/o*.php {MWFCODEDIR}
+symlink {SOURCEDIR}/p*.php {MWFCODEDIR}
+symlink {SOURCEDIR}/r*.php {MWFCODEDIR}
+symlink {SOURCEDIR}/S*.php {MWFCODEDIR}
+symlink {SOURCEDIR}/t*.php {MWFCODEDIR}
+# then the configuration itself
+symlink {MWFCONFDIR}/{WIKILABEL}/LocalSettings.php {MWFCODEDIR} evenifempty
+symlink {MWFCONFDIR}/{WIKILABEL}/AdminSettings.php {MWFCODEDIR} evenifempty
+# finally some optional files
+optional symlink {SOURCEDIR}/C* {MWFCODEDIR}
+optional symlink {SOURCEDIR}/FAQ {MWFCODEDIR}
+optional symlink {SOURCEDIR}/HISTORY {MWFCODEDIR}
+optional symlink {SOURCEDIR}/INSTALL {MWFCODEDIR}
+optional symlink {SOURCEDIR}/RE* {MWFCODEDIR}
+optional symlink {SOURCEDIR}/UPGRADE {MWFCODEDIR}

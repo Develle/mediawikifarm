@@ -1,0 +1,446 @@
+#!/bin/bash
+
+# Create a new mediawikifarm instance
+# needs one parameter: create wiki instance $1 if it does not yet exist
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+
+SCRIPTNAME=`basename $0`;
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf";
+MWFNULLFILE="/tmp/mwf_null";
+CREATOR="$MWFCONFDIR/create.template";
+
+#Wikilabel limitations
+LABELMINLENGTH=3;
+LABELMAXLENGTH=30;
+LABELCHARSET='[:alnum:]._';
+
+
+function print_help {
+  echo "$SCRIPTNAME [[-c|--code-directory] <mwfcodedir>]";
+  echo "  [[-d|--data-directory] <mwfdatadir>] <wikilabel>]";
+  echo "  prepares directories and configuration file for MediaWikiFarm (MWF) solution.";
+  echo "  -c <DIR>:    use <DIR> as MWF code directory";
+  echo "               (default is $MWFCODEDIRDEFAULT/<wikilabel>)";
+  echo "  -d <DIR>:    use <DIR> as MWF data directory";
+  echo "               (default is $MWFDATADIRDEFAULT/<wikilabel>)";
+  echo "  <wikilabel>: the label for the wiki instance to be created.";
+  echo "$SCRIPTNAME [-V | --version | -h | --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function print_error {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+function reportprogress {
+  echo " - $@";
+}
+
+
+function optionalerror {
+  # to handle errors that depend on $OPTIONAL
+  # if $OPTIONAL is false, the error stops the script
+  # if $OPTIONAL is true, then only an informational message is printed
+  MSG="$1";
+  if [ "$OPTIONAL" = "false" ]; then
+    print_error 1 "$MSG";
+  else
+    echo "info: $MSG";
+  fi;
+}
+
+
+function get_default_values {
+  # get defaults from mediawikifarm.conf
+  MWFSOURCEDIR=`mwfls -q defaultcodesource`;
+  [ $? -gt 0 ] && print_error 1 "Error querying the config file using \"mwfls\"";
+  # note that these dirs still need to be appended with the <wikilabel>:
+  MWFCODEDIRDEFAULT=`mwfls -q defaultcodepath`;
+  MWFDATADIRDEFAULT=`mwfls -q defaultdatapath`;
+  # and the web server user
+  WEBUSER=`mwfls -q webserveruser`;
+}
+
+
+function chk_wikilabel {
+  [ -z $WIKILABEL ] && print_error 1 "error: no <wikilabel> specified";
+  [ ${#WIKILABEL} -lt $LABELMINLENGTH ] && \
+    print_error 1 "wiki label $WIKILABEL too short (less than $LABELMINLENGTH characters)";
+  [ ${#WIKILABEL} -gt $LABELMAXLENGTH ] && \
+    print_error 1 "wiki label $WIKILABEL too long (more than $LABELMAXLENGTH characters)";
+  WIKILABELERRORS=`echo $WIKILABEL | tr -d $LABELCHARSET`;
+  [ ${#WIKILABELERRORS} -gt 0 ] && \
+    print_error 1 "<wikilabel> $WIKILABEL contains unsupported characters $WIKILABELERRORS";
+  LABELEXISTS=`mwfls -i $WIKILABEL`;
+  [ $? -gt 0 ] && print_error 1 "error verifying uniqueness of $WIKILABEL";
+  [ ${#LABELEXISTS} -gt 0 ] && print_error 1 "$WIKILABEL not a unique label";
+}
+
+
+function chk_basedirs {
+  if [ -z $MWFCODEDIRSPEC ]; then
+    # no MWFcodedir specified
+    MWFCODEDIR=`mwfls -q defaultcodepath`/$WIKILABEL;
+  else
+    MWFCODEDIR=$MWFCODEDIRSPEC;
+  fi;
+  
+  if [ -z $MWFDATADIRSPEC ]; then
+    # no MWFdatadir specified
+    MWFDATADIR=`mwfls -q defaultdatapath`/$WIKILABEL;
+  else
+    MWFDATADIR=$MWFDATADIRSPEC;
+  fi;
+  
+  # let's see if we can create the codedir
+  MWFCODEDIRBASE=`dirname $MWFCODEDIR`;
+  [ ! -d $MWFCODEDIRBASE ] && \
+    print_error 1 "cannot use $MWFCODEDIRBASE to create $MWFCODEDIR";
+  [ -d $MWFCODEDIR ] && \
+    print_error 1 "$MWFCODEDIR already exists, cannot create wiki $WIKILABEL";
+  
+  # Check if the datadir is the same as the codedir
+  if [ "x$MWFDATADIR" = "x$MWFCODEDIR" ]; then
+    reportprogress "$WIKILABEL data directory equals code directory (no separate data dir created)";
+  else
+    # let's see if we can create the datadir
+    MWFDATADIRBASE=`dirname $MWFDATADIR`;
+    [ ! -d $MWFDATADIRBASE ] && \
+      print_error 1 "cannot use $MWFDATADIRBASE to create $MWFDATADIR";
+    [ -d $MWFDATADIR ] && \
+      print_error 1 "$MWFDATADIR already exists, cannot create wiki $WIKILABEL";
+  fi;
+}
+
+
+function stripleadingwhitespace {
+  # strip leading whitespace from LINE
+  LINE="${LINE#"${LINE%%[![:space:]]*}"}";
+}
+
+
+function striptrailingwhitespace {
+  # strip trailing whitespace from LINE
+  LINE="${LINE%"${LINE##*[![:space:]]}"}";
+}
+
+
+function unifywhitespace {
+  # translate each and every whitespace character to a flat space
+  LINE=`echo $LINE | tr '[:space:]' ' '`;
+}
+
+function chk_create_template {
+  [ ! -f "$CREATOR" ] && print_error 1 "cannot find file $CREATOR";
+  # future functionality: check create-template version against MW version
+}
+
+
+function replace_variable {
+  # take global var LINE, and replace $VAR with $VAL in it
+  VAR=$1; VAL=$2;
+  echo "$LINE" | grep "$VAR" > "$MWFNULLFILE";
+  if [ $? -eq 0 ]; then
+    # LINE contains VAR, so let's replace it with VAL
+    LINE="${LINE/$VAR/$VAL}";
+  fi;
+}
+
+
+function make_dir {
+  [ $# -eq 1 ] || print_error 1 "illegal call to internal function make_dir. parameters given: $@";
+  TARGDIR="$1";
+  # we're simply going to ignore any other argument
+  TARGDIRBASE=`dirname $TARGDIR`;
+  if [ -d "$TARGDIRBASE" ]; then
+    if [ -d "$TARGDIR" ]; then
+      reportprogress "directory $TARGDIR already exists";
+    else
+      mkdir "$TARGDIR";
+      [ $? -eq 0 ] || optionalerror "error creating $TARGDIR";
+    fi;
+  else
+    optionalerror "cannot use $TARGDIRBASE to create $TARGDIR";
+  fi;
+}
+
+
+function set_owner {
+  OWNER=$1;
+  OWNTARGET=$2;
+  # we're simply going to ignore any other argument
+  
+  # if OWNER contains a dot like webuser.webuser, replace it with
+  # a colon like webuser:webuser
+  OWNER=`echo $OWNER | tr '.' ':'`;
+  
+  # Split owner in a user and group part
+  OWNERU=`echo $OWNER | cut -d ':' -f 1`;
+  OWNERG=`echo $OWNER | cut -d ':' -f 2`;
+  
+  # Check if the owner exists
+  grep $OWNERU /etc/passwd > "$MWFNULLFILE";
+  [ $? -gt 0 ] && optionalerror "user $OWNERU doesn't exist locally";
+  if [ ${#OWNERG} -gt 0 ]; then
+    # there is an owner group specified
+    grep $OWNERG /etc/group > "$MWFNULLFILE";
+    [ $? -gt 0 ] && optionalerror "group $OWNERG doesn't exist locally";
+  fi;
+  
+  # check if the target exists; if so, change the owner as specified
+  if [ -r $OWNTARGET ]; then
+    chown $OWNER $OWNTARGET;
+    [ $? -gt 0 ] && optionalerror "problem changing ownership on $OWNTARGET to $OWNER";
+  else
+    optionalerror "cannot read $OWNTARGET so cannot change ownership to $OWNER";
+  fi;
+}
+
+
+function set_permission {
+  PERMS=$1;
+  PERMTARGET=$2;
+  # we're simply going to ignore any other argument
+  
+  # check if requested permissions are sane
+  PERMTEST=`echo $PERMS | tr -d [0-7]`;
+  if [ ${#PERMTEST} -gt 0 ]; then
+    # PERMS contains other characters than 0-7; we cannot set those permissions
+    optionalerror "cannot change permissions (on $PERMTARGET) to $PERMS - illegal permissions";
+  else
+    # test length: permissions may be 3 or 4 numbers long: e.g. 755 or 0755
+    if [ ${#PERMS} -eq 3 -o ${#PERMS} -eq 4 ]; then
+      # permissions look good. Now test the target
+      if [ -r $PERMTARGET ]; then
+        chmod $PERMS $PERMTARGET;
+        [ $? -gt 0 ] && optionalerror "problem changing permissions on $PERMTARGET to $PERMS";
+      else
+        optionalerror "cannot read $PERMTARGET so cannot change permissions to $PERMS";
+      fi;
+    else
+      optionalerror "cannot change permissions (on $PERMTARGET) to $PERMS (permissions must be 3 or 4 digits)";
+    fi;
+  fi;
+}
+
+
+function filecopy {
+  # because the TARGET spec may contain wildcards, we're not sending it to this function
+  # using parameters - we'll take the params straight from the global var LINE
+  # with careful quoting to preserve the wildcards :-D
+  TARGET=`echo "$LINE" | cut -d ' ' -f 1`;
+  LOCATION=`echo "$LINE" | cut -d ' ' -f 2`;
+  # first see if LOCATION is a valid directory
+  if [ ! -d $LOCATION ]; then
+    optionalerror "$LOCATION is not a directory, so cannot create a symlink in it";  
+  else
+    # do the copying, but first expand TARGET (it can have wildcards)
+    for F in $TARGET; do
+      if [ -r $F ]; then
+        # check if file F already exists in LOCATION, either as symlink or
+        # as hard file/dir        
+        FBASE=`basename $F`;
+        if [ -r "$LOCATION/$FBASE" ]; then
+          optionalerror "$FBASE already exists in $LOCATION - no copy performed";
+        else
+          cp $F $LOCATION;
+          [ $? -gt 0 ] && optionalerror "problem copying $F in $LOCATION";
+        fi;
+      else
+        # cannot read the file to symlink - now what?
+        optionalerror "cannot read $F, cannot copy it in $LOCATION";
+      fi;
+    done;
+  fi;
+}
+
+
+function symlink {
+  TRG=$1;
+  TRGBASE=`basename $TRG`;
+  LOC=$2;
+  # check if TRG already exists in LOC, either as symlink or as hard file/dir
+  if [ -r "$LOC/$TRGBASE" ]; then
+    reportprogress "$TRGBASE already exists in $LOC - no symlink needed";
+  else
+    ln -s $TRG $LOC;
+    [ $? -gt 0 ] && optionalerror "problem symlinking $TRG in $LOC";
+  fi;
+}
+
+
+function make_symlink {
+  # because the TARGET spec may contain wildcards, we're not sending it to this function
+  # using parameters - we'll take the params straight from the global var LINE
+  # with careful quoting to preserve the wildcards :-D
+  TARGET=`echo "$LINE" | cut -d ' ' -f 1`;
+  LOCATION=`echo "$LINE" | cut -d ' ' -f 2`;
+  EVENIFEMPTY=`echo "$LINE" | cut -d ' ' -f 3`;
+  # we're simply going to ignore any other argument
+
+  # first see if LOCATION is a valid directory
+  if [ ! -d $LOCATION ]; then
+    optionalerror "$LOCATION is not a directory, so cannot create a symlink in it";  
+  else
+    # do the symlinking, but first expand TARGET (it can have wildcards)
+    for F in $TARGET; do
+      if [ -r $F ]; then
+        symlink $F $LOCATION;
+      else
+        # cannot read the file to symlink - now what?
+        # if the symlink commandline ends with "evenifempty", then do it anyway
+        if [ "x$EVENIFEMPTY" = "xevenifempty" ]; then
+          reportprogress "(cannot read $F but will still create a symlink to it)";
+          symlink $F $LOCATION;
+        else
+          echo "cannot read $F, will not create a symlink to it in $LOCATION";
+        fi;
+      fi;
+    done;
+  fi;
+}
+
+
+function chk_creator_line {
+  # LINE is a non-empty non-comment line; let's get the command
+  COMMAND=`echo $LINE | cut -d ' ' -f 1`;
+  OPTIONAL="false";
+  if [ "x$COMMAND" = "xoptional" ]; then
+    OPTIONAL="true";
+    LINE="${LINE:8}";
+    stripleadingwhitespace;
+    COMMAND=`echo $LINE | cut -d ' ' -f 1`;
+  fi;
+  # strip the command word from LINE
+  LINE="${LINE:${#COMMAND}}";
+  stripleadingwhitespace;
+  # so now OPTIONAL = true/false
+  #        COMMAND    contains the command
+  #        LINE       contains the rest of the line
+  # let's replace all bracketed variables with the actual values
+  replace_variable "{SOURCEDIR}"  "$MWFSOURCEDIR";
+  replace_variable "{MWFCODEDIR}" "$MWFCODEDIR";
+  replace_variable "{MWFCONFDIR}" "$MWFCONFDIR";
+  replace_variable "{MWFDATADIR}" "$MWFDATADIR";
+  replace_variable "{WIKILABEL}"  "$WIKILABEL";
+  replace_variable "{WEBUSER}"    "$WEBUSER";
+  # execution
+  case $COMMAND in
+    mkdir)      make_dir $LINE;;
+    owner)      set_owner $LINE;;
+    permission) set_permission $LINE;;
+    symlink)    make_symlink;;
+    copy)       filecopy;;
+    *)          echo "unknown instruction $COMMAND in $CREATOR - must halt";
+                exit 1;;
+  esac;
+}
+
+
+function use_create_template {
+  while read LINE; do
+    stripleadingwhitespace; striptrailingwhitespace; unifywhitespace;
+    # if we're left with less than 2 characters it cannot be a valid line
+    if [ ${#LINE} -gt 1 ]; then
+      # LINE more than 1 char, let's evaluate
+       if [ ! "x${LINE:0:1}" = "x#" ]; then
+       # LINE is not a comment line
+       # let's evaluate and execute it
+         chk_creator_line;
+       fi;
+    fi;
+  done <$CREATOR ;
+}
+
+
+function register_wiki {
+  reportprogress "registering wiki instance $WIKILABEL";
+  # register the label
+  echo "instance = $WIKILABEL" >> $MWFCONFIG;
+  # register the directories
+  echo "codepath[$WIKILABEL] = $MWFCODEDIR"  >> $MWFCONFIG;
+  echo "datapath[$WIKILABEL] = $MWFDATADIR"  >> $MWFCONFIG;
+}
+
+
+function prepare_webserver_template {
+  # currently we only understand apache :-(
+  if [ ! -r $MWFCONFDIR/apache.template ]; then
+    print_error 1 "cannot read $MWFCONFDIR/apache.template, so cannot create the webserver configuration for you";
+  else
+    sed "s,/var/lib/mediawiki,$MWFCODEDIR,g" < $MWFCONFDIR/apache.template > $MWFCONFDIR/$WIKILABEL/apache.conf
+    reportprogress "Created $MWFCONFDIR/$WIKILABEL/apache.conf"
+    echo " -> do not forget to Include this in the right Apache Virtual Host declaration"
+  fi;
+}
+
+
+######################################################################
+ 
+# Handle all parameters, if any
+if [ $# -gt 0 ]; then
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --copyright)         print_version; print_copyright; exit 0;;
+      -V|--version)        print_version; exit 0;;
+      -h|--help)           print_help; exit 0;;
+      -c|--code-directory) if [ $# -lt 2 ]; then
+                             print_error 1 "missing parameter after $1";
+                           else
+                             shift; MWFCODEDIRSPEC=$1; shift
+                           fi;;
+      -d|--data-directory) if [ $# -lt 2 ]; then
+                             print_error 1 "missing parameter after $1";
+                           else
+                             shift; MWFDATADIRSPEC=$1; shift
+                           fi;;
+      *)                   WIKILABEL=$1; shift;
+                           reportprogress "Creating wiki instance $WIKILABEL";
+                           [ $# -gt 0 ] && print_error 3 "unknown parameter $1 after $WIKILABEL";;
+    esac;
+  done
+fi;
+
+get_default_values;
+chk_wikilabel;
+chk_basedirs;
+chk_create_template;
+use_create_template;
+register_wiki;
+prepare_webserver_template;
+exit 0

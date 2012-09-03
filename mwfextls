@@ -1,0 +1,312 @@
+#!/bin/bash
+
+# List all available mediawikifarm extensions
+# mwfextls foo can tell which extensions instance foo uses (empty line + exitcode = 0 if none)
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+
+SCRIPTNAME=`basename $0`;
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf"
+MWFEXTCONFIG="$MWFCONFDIR/extensions.available"
+COL_EXTTYPE=29;    # column number (minus 1) for reporting an extension type
+COL_REQONCE=39;    # column number (minus 1) for reporting an extension's require_once term
+COL_ADDITIONAL=72; # column number (minus 1) for reporting an extension's additional extensions
+COL_LINENUM=80;    # column number (minus 1) for reporting an extensions enabling line in LocalSettings.php
+MWFSIMPLEDIR="extensions";
+MWFCOMPLEXDIR="complexextensions";
+MWFNULLFILE="/tmp/mwf_null";
+NOTESFILE="MWF_README";
+IP='$IP'; # funny declaration to work around quoting issues
+
+
+function print_help {
+  echo "$SCRIPTNAME";
+  echo "  lists all available MediaWiki extensions";
+  echo "$SCRIPTNAME [-e|--extension-notes] <extension>";
+  echo "  lists the extension notes of a MediaWiki extension";
+  echo "$SCRIPTNAME [-t|--type] [-r|--require_once] [-l|--linenums]";
+  echo "    [-a|--additional] [-n|--no-total] <wiki>";
+  echo "  lists all extensions that are enabled for that instance.";
+  echo "  - If -a is specified, also shows which additional extensions should";
+  echo "    be enabled";
+  echo "  - If -l is specified, also appends linenumber within LocalSettings.php";
+  echo "    where the extension is enabled";
+  echo "  - If -n is specified, leaves out the line reporting the total number";
+  echo "    of extensions";
+  echo "  - If -r is specified, also shows the full require_once line that";
+  echo "    enables the extension";
+  echo "  - If -t is specified, also tells the type of the extension.";
+  echo "$SCRIPTNAME [-V or --version or -h or --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function print_error {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function chk_extconfigfile {
+  # let's see if we can actually read extensions.available
+  [ ! -f "$MWFEXTCONFIG" ] && print_error 1 "$MWFEXTCONFIG is not a regular file";
+  [ ! -r "$MWFEXTCONFIG" ] && print_error 1 "cannot read $MWFEXTCONFIG";
+}
+
+
+function chk_localsettings {
+  # let's see if we can actually read LocalSettings.php
+  LOCALSETTINGS="$MWFCONFDIR/$WIKILABEL/LocalSettings.php"
+  [ ! -f "$LOCALSETTINGS" ] && print_error 1 "$LOCALSETTINGS is not a regular file";
+  [ ! -r "$LOCALSETTINGS" ] && print_error 1 "cannot read $LOCALSETTINGS";
+}
+
+
+function chk_wikilabel {
+  LABELEXISTS=`mwfls -i $WIKILABEL`;
+  [ $? -gt 0 ] && print_error 1 "cannot verify $WIKILABEL is a valid wiki instance";
+  [ ${#LABELEXISTS} -gt 0 ] || print_error 1 "$WIKILABEL not a known wiki instance";
+}
+
+
+function chk_extension {
+  EXTLINE=`cat $MWFEXTCONFIG | grep "^$EXTENSION "`;
+  [ $? -gt 0 ] && print_error 1 "extension $EXTENSION not registered with MWF";
+  # while we're here, let's collect some data on the extension
+  EXTTYPE=`echo $EXTLINE | cut -d ' ' -f 2`;
+  EXT_REQ=`echo $EXTLINE | cut -d ' ' -f 3`;
+  case $EXTTYPE in
+    support) MWFDIRTYPE="$MWFSIMPLEDIR";;
+    simple)  MWFDIRTYPE="$MWFSIMPLEDIR";;
+    complex) MWFDIRTYPE="$MWFCOMPLEXDIR";;
+  esac;
+  EXTFULLDIR="`mwfls -q defaultcodesource`/$MWFDIRTYPE/`dirname $EXT_REQ`";
+}
+
+
+function stripleadingwhitespace {
+  # strip leading whitespace from LINE
+  LINE="${LINE#"${LINE%%[![:space:]]*}"}";
+}
+
+
+function print_extensions_notes {
+  # look for MWF_README in the extension's directory and print it
+  NOTESDIR=$1;
+  if [ -f "$NOTESDIR/$NOTESFILE" ]; then
+    echo "content of $NOTESFILE for extension $EXTENSION:";
+    SEPARATOR="   =============================================================================";
+    echo "$SEPARATOR";
+    while read LINE; do
+      echo "   $LINE";
+    done <"$NOTESDIR/$NOTESFILE";
+    echo "$SEPARATOR";
+  else
+    print_error 1 "no $NOTESFILE found for extension $EXTENSION";
+  fi;
+}
+
+
+function report_extension {
+  REPLINE=$1;
+  # now get the columns
+  EXTNAME=`echo $REPLINE | cut -d ' ' -f 1`;
+  EXTTYPE=`echo $REPLINE | cut -d ' ' -f 2`;
+  EXT_REQ=`echo $REPLINE | cut -d ' ' -f 3`;
+  ADDITIO=`echo $REPLINE | cut -d ' ' -f 4`;
+  REPORTLINE="$EXTNAME";
+  if [ "$PRINTTYPE" = "true" ]; then
+    while [ ${#REPORTLINE} -lt $COL_EXTTYPE ]; do
+      REPORTLINE="$REPORTLINE ";
+    done;
+    REPORTLINE="$REPORTLINE $EXTTYPE";
+  fi;
+  if [ "$PRINTREQ" = "true" ]; then
+    while [ ${#REPORTLINE} -lt $COL_REQONCE ]; do
+      REPORTLINE="$REPORTLINE ";
+    done;
+    REPORTLINE="$REPORTLINE $EXT_REQ";
+  fi;
+  if [ "$PRINTADDITIONAL" = "true" ]; then
+    while [ ${#REPORTLINE} -lt $COL_ADDITIONAL ]; do
+      REPORTLINE="$REPORTLINE ";
+    done;
+    REPORTLINE="$REPORTLINE $ADDITIO";
+  fi;
+  if [ "$PRINTLNUMS" = "true" ]; then
+    while [ ${#REPORTLINE} -lt $COL_LINENUM ]; do
+      REPORTLINE="$REPORTLINE ";
+    done;
+    REPORTLINE="$REPORTLINE $LINENUM";
+  fi;
+  echo "$REPORTLINE";
+}
+
+
+function list_available_extensions {
+  FOUND=0;
+  # now check each line of extensions.available
+  while read LINE; do
+    # we need to skip empty lines and lines beginning with #
+    if [ ${#LINE} -gt 1 ]; then
+      if [ ! "x${LINE:0:1}" = "x#" ]; then
+        # translate all whitespaces to spaces
+        EXTLINE=`echo "$LINE" | tr [:blank:] ' '`
+        # now report the extension
+        report_extension "$EXTLINE";
+        let "FOUND += 1";
+      fi;
+    fi;
+  done <$MWFEXTCONFIG;
+  if [ "$TOTALS" = "true" ]; then
+    PLURAL="s";
+    [ "$FOUND" -eq 1 ] && PLURAL="";
+    echo " $FOUND extension$PLURAL available";
+  fi;
+}
+
+
+function match_extensions {
+  unset CANDIDATE;
+  echo "$LINE" | grep "require_once(\"$IP/$MWFSIMPLEDIR/" > "$MWFNULLFILE";
+  [ $? -eq 0 ] && CANDIDATE="$LINE";
+  echo "$LINE" | grep "require_once(\"$IP/$MWFCOMPLEXDIR/" > "$MWFNULLFILE";
+  [ $? -eq 0 ] && CANDIDATE="$LINE";
+  if [ "$CANDIDATE" ]; then
+    # we might be on to an extension enabling line
+    # look between the double quotes
+    CANDIDATE=`echo $CANDIDATE | cut -d '"' -f 2`;
+    # the defined extension should be preceded with "$IP/", so
+    # strip that
+    [ "${CANDIDATE:0:4}" = "$IP/" ] && \
+      CANDIDATE="${CANDIDATE:4}";
+    # the defined extension still is preceded with a dir (either
+    # simple extension dir or complex extension dir), so strip
+    # up to the first slash
+    F=`echo "$CANDIDATE" | cut -d '/' -f 1`;
+    let "G = ${#F} + 1";
+    CANDIDATE="${CANDIDATE:$G}";
+    # now match this in all available extensions
+    MATCH=`cat $MWFEXTCONFIG | grep " $CANDIDATE"`;
+    if [ $? -eq 0 ]; then
+      # Yay! we found a match! Report it
+      report_extension "$MATCH"
+      let "FOUND += 1";
+    fi;
+  fi;
+}
+
+
+function list_enabled_extensions {
+  chk_localsettings;
+  FOUND=0;
+  LINENUM=0;
+  # now check each line of the LocalSettings.php file
+  while read LINE; do
+    let "LINENUM += 1";
+    stripleadingwhitespace;
+    if [ ${#LINE} -gt 1 ]; then
+      if [ ! ${LINE:0:1} = "#" ]; then
+        # for readibility we now jump to this function:
+        match_extensions;
+      fi;
+    fi;
+  done <$LOCALSETTINGS;
+  if [ "$TOTALS" = "true" ]; then
+    PLURAL="s";
+    [ "$FOUND" -eq 1 ] && PLURAL="";
+    echo " $FOUND extension$PLURAL enabled for instance $WIKILABEL";
+  fi;
+}
+
+
+######################################################################
+
+# Handle all parameters, if any
+[ $# -gt 5 ] && print_error 1 "too many parameters ($#)";
+
+PRINTADDITIONAL="false";
+PRINTTYPE="false";
+PRINTREQ="false";
+PRINTLNUMS="false";
+TOTALS="true";
+# not necessary but let's make sure these are empty to begin with:
+unset OPTS;
+unset WIKILABEL;
+unset EXTENSION;
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --copyright)          print_version; print_copyright; exit 0;;
+    -V|--version)         print_version; exit 0;;
+    -h|--help)            print_help; exit 0;;
+    -e|--extension-notes) [ $# -eq 1 ] && print_error 1 "no extension name specified after $1";
+                          [ -z "$OPTS" ] || print_error 1 "cannot combine $1 with other options ($OPTS)";
+                          EXTENSION=$2; shift; shift;
+                          chk_extension;
+                          [ $# -gt 2 ] && print_error 1 "unknown parameter $3 following extension $EXTENSION";;
+    -a|--additional)      PRINTADDITIONAL="true"; shift;
+                          OPTS="$OPTS -a";;
+    -l|--linenums)        PRINTLNUMS="true"; shift;
+                          OPTS="$OPTS -l";;
+    -n|--no-total)        TOTALS="false"; shift;
+                          OPTS="$OPTS -n";;
+    -r|--require_once)    PRINTREQ="true"; shift;
+                          OPTS="$OPTS -r";;
+    -t|--type)            PRINTTYPE="true"; shift;
+                          OPTS="$OPTS -t";;
+    *)                    # test if WIKILABEL is empty
+                          if [ ! "$WIKILABEL" ]; then
+                            WIKILABEL=$1; shift;
+                            chk_wikilabel;
+                          else
+                            # apparently we've already interpreted a
+                            # parameter as wikilabel
+                            print_error 1 "unknown parameter $1";
+                          fi;;
+  esac;
+done;
+
+chk_extconfigfile;
+if [ "$WIKILABEL" ]; then
+  list_enabled_extensions;
+else
+  if [ "$EXTENSION" ]; then
+    print_extensions_notes "$EXTFULLDIR";
+  else
+    list_available_extensions;
+  fi;
+fi;
+
+exit 0

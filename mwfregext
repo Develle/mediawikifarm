@@ -1,0 +1,258 @@
+#!/bin/bash
+
+# register an MWF extension
+# mwfregext 
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+
+SCRIPTNAME=`basename $0`;
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf";
+MWFEXTCONFIG="$MWFCONFDIR/extensions.available";
+COL_EXTTYPE=29;    # column number (minus 1) for registering an extension type
+COL_REQONCE=39;    # column number (minus 1) for registering an extension's require_once term
+COL_ADDITIONAL=72; # column number (minus 1) for registering an extension's additional extensions
+MWFSIMPLEDIR="extensions";
+MWFCOMPLEXDIR="complexextensions";
+NOTESFILE="MWF_README";
+EXTNAME_MINLENGTH=3;
+EXTNAME_MAXLENGTH=30;
+EXTNAMECHARSET='[:alnum:]._-';
+
+
+function print_help {
+  echo "$SCRIPTNAME -i ";
+  echo "  interactively registers an extension";
+  echo "$SCRIPTNAME [-t <simple|complex|support>] -r <extension> -n <Extension-name>";
+  echo "  [-a additionalextensions]";
+  echo "  registers an extension with friendly name Extension-name, of the specified";
+  echo "  type (default = simple), and enabled by using <extension> in a require_once()";
+  echo "  statement. if applicable, you can specify additional extensions with -a";
+  echo "  (multiple extensions separated by comma's)";
+  echo "$SCRIPTNAME [-V or --version or -h or --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function print_error {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function reportprogress {
+  echo " - $@";
+}
+
+
+function print_extensions_notes {
+  # look for MWF_README in the extension's directory and print it
+  NOTES="$1/$NOTESFILE";
+  if [ -f "$NOTES" ]; then
+    reportprogress "found $NOTES:";
+    SEPARATOR="   =============================================================================";
+    echo "$SEPARATOR";
+    while read LINE; do
+      echo "   $LINE";
+    done <"$NOTES";
+    echo "$SEPARATOR";
+    reportprogress "this text will be shown when a user enables or disables this extension."
+  fi;
+}
+
+
+function validate_name {
+  [ ${#EXTENSION} -lt $EXTNAME_MINLENGTH ] && \
+    print_error 1 "extension name $EXTENSION too short (less than $EXTNAME_MINLENGTH characters)";
+  [ ${#EXTENSION} -gt $EXTNAME_MAXLENGTH ] && \
+    print_error 1 "extension name $EXTENSION too long (more than $EXTNAME_MAXLENGTH characters)";
+  EXTNAMEERRORS=`echo $EXTENSION | tr -d $EXTNAMECHARSET`;
+  [ ${#EXTNAMEERRORS} -gt 0 ] && \
+    print_error 1 "extension name \"$EXTENSION\" contains unsupported characters \"$EXTNAMEERRORS\"";
+  NAMES=`mwfextls -n`;
+  if [ ${#NAMES} -gt 1 ]; then
+    # existing extension names are found. Check for uniqueness
+    for F in $NAMES; do
+      [ "$F" = "$EXTENSION" ] && print_error 1 "extension name $EXTENSION not unique";
+    done;
+  fi;
+  reportprogress "extension name $EXTENSION is acceptable";
+}
+
+
+function validate_type {
+  case "$TYPE" in
+    simple|support|complex) reportprogress "extension type $TYPE is valid";;
+    *)                      print_error 1 "unknown extension type $TYPE";;
+  esac;
+}
+
+
+function validate_require_once {
+  [ ${#REQ} -lt 2 ] && print_error 1 "cannot validate require_once statement $REQ";
+  if [ $TYPE = "complex" ]; then
+    REQ_FULL="$MWFCOMPLEXDIR/$REQ";
+  else
+    REQ_FULL="$MWFSIMPLEDIR/$REQ";
+  fi;
+  # get defaults from mediawikifarm.conf
+  MWFSOURCEDIR=`mwfls -q defaultcodesource`;
+  [ -f "$MWFSOURCEDIR/$REQ_FULL" ] || print_error 1 "cannot validate require_once statement $REQ_FULL";
+  reportprogress "validated that $REQ can be found";
+  # see if we can find extensions notes and remind the user of them
+  EXTFULLDIR="$MWFSOURCEDIR/`dirname $REQ_FULL`";
+  print_extensions_notes "$EXTFULLDIR";
+}
+
+
+function validate_additional {
+  ADDITIONAL2=`echo $ADDITIONAL | tr ',' ' '`;
+  NAMES=`mwfextls -n`;
+  # run each specified additional extension past the existing registered extensions
+  for F in $ADDITIONAL2; do
+    # existing extension names are found. Check that our additinal name is amongst them
+    EXTENSIONREGISTERED="false";
+    for G in $NAMES; do
+      [ $G = $F ] && EXTENSIONREGISTERED="true";
+    done;
+    [ "$EXTENSIONREGISTERED" = "false" ] && \
+      print_error 1 "extension $F not registered";
+    reportprogress "additional extension $F previously registered";
+  done;
+}
+
+
+function interactively_get_values {
+  echo -n "Please specify a unique name for the extension: ";
+  read EXTENSION;
+  validate_name;
+  echo;
+  echo "Please specify the extension type (simple/complex/support)";
+  echo -n "(empty = simple): ";
+  read TYPE;
+  if [ "${#TYPE}" -lt 1 ]; then
+    #empty $TYPE means the default: simple
+    TYPE="simple";
+  else
+    validate_type;
+  fi;
+  echo;
+  echo "Please specify the extension's require_once line";
+  echo -n "(presumably something like '<dir>/<file>.php): ";
+  read REQ;
+  validate_require_once;
+  echo;
+  echo "If the extension requires other extension(s), specify their name(s) here";
+  echo "in a single, comma-separated line (no spaces) (leave empty for NONE)";
+  read ADDITIONAL;
+}
+
+
+function register_extension {
+  [ -f "$MWFEXTCONFIG" ] || print_error 1 "cannot find extension configuration file $MWFEXTCONFIG";
+  [ -w "$MWFEXTCONFIG" ] || print_error 1 "extension configuration file $MWFEXTCONFIG not writable";
+  # let's build the line to add to MWFEXTCONFIG
+  EXTLINE="$EXTENSION";
+  while [ ${#EXTLINE} -lt $COL_EXTTYPE ]; do
+    EXTLINE="$EXTLINE ";
+  done;
+  EXTLINE="$EXTLINE $TYPE";
+  while [ ${#EXTLINE} -lt $COL_REQONCE ]; do
+    EXTLINE="$EXTLINE ";
+  done;
+  EXTLINE="$EXTLINE $REQ";
+  if [ ${#ADDITIONAL} -gt 1 ]; then
+    while [ ${#EXTLINE} -lt $COL_ADDITIONAL ]; do
+      EXTLINE="$EXTLINE ";
+    done;
+    EXTLINE="$EXTLINE $ADDITIONAL";
+  fi;
+  # the extension registration line is now built - put it in the extension configuration file
+  reportprogress "built line \"$EXTLINE\"";
+  reportprogress "adding it to $MWFEXTCONFIG";
+  echo "$EXTLINE" >> "$MWFEXTCONFIG";
+}
+
+
+######################################################################
+
+# Handle all parameters, if any
+if [ $# -lt 1 ]; then
+  echo "error: no parameters specified";
+  print_help;
+  exit 1;
+fi;
+
+# specifying default values
+INTERACTIVE="false";
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --copyright)      print_version; print_copyright; exit 0;;
+    -V|--version)     print_version; exit 0;;
+    -h|--help)        print_help; exit 0;;
+    -t|--type)        [ $# -lt 2 ] && print_error 1 "missing type after $1";
+                      shift; TYPE=$1; shift;;
+    -r|--requireonce) [ $# -lt 2 ] && print_error 1 "missing extension after $1";
+                      shift; REQ=$1; shift;;
+    -i|--interactive) shift; INTERACTIVE="true";;
+    -n|--name)        [ $# -lt 2 ] && print_error 1 "missing name after $1";
+                      shift; EXTENSION=$1; shift;;
+    -a|--additional)  [ $# -lt 2 ] && print_error 1 "missing extension(s) after $1";
+                      shift; ADDITIONAL=$1; shift;;
+    *)                echo "unknown parameter $1";
+                      exit $E_UNKNOWNPARAM;;
+  esac;
+done;
+
+if [ "$INTERACTIVE" = "false" ]; then
+  # non-interactive; everything should have been declared, only additional = optional
+  [ -z "$EXTENSION" ] && print_error 1 "no extension name declared; use -n <Extension-name>";
+  validate_name;
+  if [ -z "$TYPE" ]; then
+    # if not specified: default extension type is "simple"
+    TYPE="simple";
+  else
+    validate_type;
+  fi;
+  [ -z "$REQ" ] && print_error 1 "no extension enabling statement declared; use -r";
+  validate_require_once;
+else
+  interactively_get_values;
+fi
+
+[ ${#ADDITIONAL} -gt 1 ] && validate_additional;
+register_extension;
+
+exit 0

@@ -1,0 +1,179 @@
+#!/bin/bash
+
+# finish a mediawikifarm instance configuration
+
+# Needs one parameter: the wiki instance to finish
+# if no wikilabel specified AND only one wiki needs finishing, 
+# then mwffinish can find that out on its own and finish the job
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+
+SCRIPTNAME=`basename $0`;
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf";
+MWFNULLFILE="/tmp/mwf_null";
+
+
+function print_error {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function reportprogress {
+  echo " - $@";
+}
+
+
+function print_help {
+  echo "$SCRIPTNAME can move and update LocalSettings.php for a wiki instance [wiki]";
+  echo "  after the web based configuration";
+  echo "$SCRIPTNAME [wiki]";
+  echo "  finishes the configuration of instance [wiki]";
+  echo "  If no [wiki] is specified, $SCRIPTNAME tries to guess which wiki needs";
+  echo "  finishing. If only one wiki needs finishing, $SCRIPTNAME will finish that one.";
+  echo "$SCRIPTNAME [-V or --version or -h or --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function chk_wikilabel {
+  LABELEXISTS=`mwfls -i $WIKILABEL`;
+  [ $? -gt 0 ] && print_error 1 "cannot verify instance $WIKILABEL";
+  [ "x$LABELEXISTS" = "x$WIKILABEL" ] || print_error 1 "$WIKILABEL not a unique label";
+}
+
+
+function guess_wikilabel {
+  FOUND=0;
+  for WIKI in `mwfls`; do
+    if [ ! -f $MWFCONFDIR/$WIKI/LocalSettings.php ]; then
+      reportprogress "found that wiki instance $WIKI needs finishing";
+      WIKILABEL=$WIKI;
+      let "FOUND += 1"
+    fi;
+  done;
+  [ $FOUND -eq 0 ] && print_error 1 "no wiki seems to need finishing";
+  [ $FOUND -gt 1 ] && print_error 1 "multiple wikis seem to need finishing";
+}
+
+
+function handle_LocalSettings {
+  # move the LocalSettings.php from the souce directory to the settings directory
+  SOURCELOCATION="`mwfls -q codepath[$WIKILABEL]`/config";
+  TARGETLOCATION="$MWFCONFDIR/$WIKILABEL";
+  mwfupdate move $WIKILABEL;
+  MWFRESULT=$?;
+  [ $MWFRESULT -gt 0 ] && print_error $MWFRESULT \
+    "problem moving LocalSettings.php from $SOURCELOCATION to $TARGETLOCATION";
+  reportprogress "moved LocalSettings.php from $SOURCELOCATION to $TARGETLOCATION";
+    
+  # create the line that describes the install path for this instance
+  CODEPATH=`mwfls -q "codepath[$WIKILABEL]"`;
+  MWFLSRESULT=$?;
+  if [ $MWFLSRESULT -gt 0 ]; then
+    # apparently the codepath could not be read from mediawikifarm.conf
+    # construct the path from the default instead
+    CODEPATH=`mwfls -q defaultcodepath`"/$WIKILABEL";
+    MWFLSRESULT=$?;
+    [ $MWFLSRESULT -gt 0 ] && \
+      print_error $MWFLSRESULT "no codepath for $WIKILABEL and cannot construct a default one";
+  fi;
+  INSTALLPATHLINE="define('MW_INSTALL_PATH','$CODEPATH');"
+  
+  # two possibilities: define ('MW_INSTALL_PATH' is already in place, or not
+  DEFINESTRING=`mwfupdate query "define('MW_INSTALL_PATH'," $WIKILABEL`;
+  if [ $? -eq 0 ]; then
+    # MW_INSTALL_PATH gets defined explicitly (e.g. with Debian MW)
+    # let's replace that defining line with the created INSTALLPATHLINE
+    DEFINELINENUM=`echo $DEFINESTRING | cut -d ' ' -f 1`;
+    mwfupdate remove $DEFINELINENUM $WIKILABEL;
+  else
+    # MW_INSTALL_PATH does not get defined explicitly (e.g. with vanilla MW)
+    # let's find the first line that contains MW_INSTALL_PATH, and
+    # insert the define statement before it
+    FIRSTOCCURENCE=`mwfupdate query "'MW_INSTALL_PATH'" $WIKILABEL`;
+    echo "$FIRSTOCCURENCE" | grep "snippet not found" > "$MWFNULLFILE";
+    if [ $? -eq 0 ]; then
+      # Ouch! MW_INSTALL_PATH does not occur in LocalSettings at all!
+      # we'll then want to add the MW_INSTALL_PATH statement to the end of LocalSettings,
+      # just to be safe. add-to-end is specified to mwfupdate by linenumber zero
+      DEFINELINENUM="0";
+    else
+      # we can read the linenumber
+      DEFINELINENUM=`echo $FIRSTOCCURENCE | cut -d ' ' -f 1`;
+      # note: there is a small chance that we'll insert a line right through a multi-line
+      # statement; in a future version we should look back for a line that ends with ;
+      # Furthermore: for readability we'll add an empty line which will wind up after the
+      # MW_INSTALL_PATH statement 
+      mwfupdate add $DEFINELINENUM $WIKILABEL;
+      MWFRESULT=$?;
+      [ $MWFRESULT -gt 0 ] && print_error $MWFRESULT \
+         "cannot insert empty line at line $DEFINELINENUM of $MWFCONFDIR/$WIKILABEL/LocalSettings.php";
+    fi;
+  fi;
+
+  # now we can insert the created INSTALLPATHLINE at DEFINELINENUM, because either the original
+  # "define MW_INSTALL_PATH" statement is deleted, or it was not there and we're inserting the
+  # definition right before the first use of MW_INSTALL_PATH
+  mwfupdate add $DEFINELINENUM "$INSTALLPATHLINE" $WIKILABEL;
+  MWFRESULT=$?;
+  [ $MWFRESULT -gt 0 ] && print_error $MWFRESULT \
+    "cannot add MW_INSTALL_PATH statement to line $DEFINELINENUM of $MWFCONFDIR/$WIKILABEL/LocalSettings.php";
+  reportprogress "added MW_INSTALL_PATH statement to line $DEFINELINENUM of $MWFCONFDIR/$WIKILABEL/LocalSettings.php"
+  let "DEFINELINENUM += 1";
+}
+
+
+######################################################################
+
+# Handle all options, if any
+if [ $# -gt 0 ]; then
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --copyright)  print_version; print_copyright; exit 0;;
+      -V|--version) print_version; exit 0;;
+      -h|--help)    print_help; exit 0;;
+      *)            WIKILABEL=$1; break;;
+    esac;
+  done;
+  # we are sure to have *something* as wikilabel, but is it valid?
+  chk_wikilabel;
+else
+  reportprogress "no wikilabel given - attempting to guess...";
+  guess_wikilabel;
+fi;
+
+handle_LocalSettings;
+reportprogress "succesfully finished wiki instance $WIKILABEL";
+exit 0

@@ -1,0 +1,501 @@
+#!/bin/bash
+#
+# can create a backup of a mediawikifarm instance
+# needs at least the wiki instance name, but most probably also credentials
+#
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+
+SCRIPTNAME=`basename $0`;
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf";
+MWFNULLFILE="/tmp/mwf_null";
+MWFCOMPLEXDIR="complexextensions";
+
+# default paths
+CURRENTDIR=`pwd`;
+BACKUPPATH=$CURRENTDIR;
+TEMPPATH=$CURRENTDIR;
+# default settings
+BEQUIET="false";
+COMPLEXEXT="false";
+COMPRESSION="gzip";
+DATADIR="false";
+DATUM=`date +%Y-%m-%d-%H-%M`;
+DATUMNICE=`date +%Y-%m-%d`" "`date +%H:%M`;
+LOG="false";
+MWFDATA="false";
+NUMXMLBACKUPS=0;
+VERBOSE="false";
+WEBCONFIG="false";
+
+E_MULTIPLEFOUND="1";
+E_CONFIGFILEERROR="2";
+E_UNKNOWNPARAM="3";
+E_VARNOTFOUND="4";
+E_WEBCONFIGFILEERROR="5";
+E_CREDENTIALERROR="6";
+E_OTHER="99";
+
+
+function print_error() {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function reportprogress {
+  [ $BEQUIET = "false" ] && echo " - $@";
+}
+
+
+function verbose_echo() {
+  [ "$VERBOSE" = "true" ] && reportprogress "  $@";
+}
+
+
+function print_help {
+  echo "$SCRIPTNAME [options] <wiki> can backup a wiki instance <wiki>";
+  echo "  OPTIONS:";
+  echo "    Credentials:";
+  echo "    ============";
+  echo "      To access the MySQL database, an account with sufficient rights is";
+  echo "      required. The account can be specified using username and password,";
+  echo "      or by specifying a file that is read as AdminSettings.php";
+  echo "        [-U|--user] <name>        : will use <name> to access MySQL database";
+  echo "        [-P|--password] <password>: will use <password> to access MySQL database";
+  echo '        [-A|--aconf] <file>       : will use <file> and read $wgDBadminuser and';
+  echo '                                    $wgDBadminpassword from it';
+  echo "      If you don't specify credentials, $SCRIPTNAME will attempt to use the database";
+  echo "      user from LocalSettings.php, but this will often fail";
+  echo;
+  echo "    Backup selection:";
+  echo "    =================";
+  echo "      Standard the MySQL database of <wiki> is backed up, together with";
+  echo "      LocalSettings.php and some metadata, and put in a tar ball. Extra's:";
+  echo "        [-d|--data-directory]     : add the whole data directory to the backup";
+  echo "        [-e|--complex-extensions] : add the whole complex-extensions-directory";
+  echo "        [-m|--mwfdata]            : add MWF-specific data to the metadata file";
+  echo "        [-w|--webconfig]          : include the webserver config file";
+  echo "        [-x|--xml] <type>         : add an XML-backup of the specified type <type>";
+  echo "                                    can be full, current, stable, log; can be";
+  echo "                                    invoked multiple times";
+  echo "    Backup destination:";
+  echo "    ===================";
+  echo "      You can specify how to name the backup file, and where to put it";
+  echo "        [-n|--name] <name>     : specify the name (without extension) of the backup file;";
+  echo "                                 default is <wiki>-<date>-<time>";
+  echo "        [-p|--path] <path>     : specify where to place the backup. Default is current dir.";
+  echo "        [-t|--temppath] <path> : use <path> to temporarily store (uncompressed) backup parts.";
+  echo "                                 Default is current dir";
+  echo "    Backup compression:";
+  echo "    ===================";
+  echo "      The backup you make is going to be put in a tarball, but you can have it compressed.";
+  echo "      This also determines the extension of the backup created.";
+  echo "        [-c|-compress] <type> selects the compression type; default is gzip. Valid <type> are:";
+  echo "           [c|compress] : will use compress tool; extension is .tar.Z";
+  echo "           [g|gzip]     : will use gzip tool; extension is .tgz";
+  echo "           [b|bzip2]    : will use bzip2 tool; extension is .tar.bz2";
+  echo "           [t|tar]      : will not compress, but simply tar all backup files; extension is .tar";
+  echo;
+  echo "    Miscellaneous:";
+  echo "    ==============";
+  echo "        [-v|--verbose] : be very verbose about the backup process";
+  echo "        [-q|--quiet]   : suppress all output except errors (overrides -v). Handy for scripted";
+  echo "                         backups";
+  echo "$SCRIPTNAME [-V or --version or -h or --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function chk_wikilabel {
+  # check if we know this wiki label
+  LABELEXISTS=`mwfls -i $WIKILABEL`;
+  [ $? -gt 0 ] && print_error $E_OTHER "cannot verify $WIKILABEL is a valid wiki instance";
+  [ ${#LABELEXISTS} -gt 0 ] || print_error $E_OTHER "$WIKILABEL not a known wiki instance";
+  LOCALSETTINGS="$MWFCONFDIR/$WIKILABEL/LocalSettings.php";
+}
+
+
+function chk_xmlbackuptype {
+  TYPEVALID="false";
+  TYPE=$1;
+  for F in full current stable logs; do
+    [ "x$TYPE" = "x$F" ] && TYPEVALID="true";
+  done;
+  [ "$TYPEVALID" = "true" ] || \
+    print_error "$E_UNKNOWNPARAM" "cannot understand XML backup type $TYPE";
+  verbose_echo "will make an XML backup of type $TYPE";
+}
+
+
+function chk_compressiontool {
+  case $COMPRESSION in
+    compress|c) COMPRESSION="compress"; COMPRES_EXT="tar.Z";   COMPRES_OPT="-q -c";;
+    gzip|g)     COMPRESSION="gzip";     COMPRES_EXT="tgz";     COMPRES_OPT="-c9";;
+    bzip2|b)    COMPRESSION="bzip2";    COMPRES_EXT="tar.bz2"; COMPRES_OPT="-q -c";;
+    tar|t)      COMPRESSION="tar";      COMPRES_EXT="tar";     COMPRES_OPT="-c";
+                [ "$VERBOSE" = "true" ] && COMPRES_OPT="-cv";;
+    *)          print_error "$E_UNKNOWNPARAM" "cannot understand compression type $COMPRESSIONTOOL";;
+  esac;
+  COMPRESSIONTOOL=`which $COMPRESSION`;
+  [ $? -eq 0 ] || print_error "$E_OTHER" "$COMPRESSION utility not found"
+  verbose_echo "using compression tool $COMPRESSIONTOOL with options $COMPRES_OPT"
+}
+
+
+function chk_aconf {
+  # check if we can read AdminSettings.php
+  verbose_echo "start reading $MWFACONF";
+  [ -r $MWFACONF ] || print_error $E_OTHER "cannot read $MWACONF";
+  MYSQLUSER=`mwfupdate -f $MWFACONF -q variable read wgDBuser $WIKILABEL`;
+  RESULT="$?";
+  if [ "$RESULT" -gt "0" ]; then
+    # some error when looking for the DB admin user
+    MYSQLUSER="";
+    reportprogress "could not read database user from $MWFACONF ";
+  else
+    verbose_echo "found database user $MYSQLUSER";
+  fi;
+  MYSQLPASSWORD=`mwfupdate -f $MWFACONF -q variable read wgDBpassword $WIKILABEL`;
+  RESULT="$?";
+  if [ "$RESULT" -gt "0" ]; then
+    # some error when looking for the DB admin password
+    MYSQLPASSWORD="";
+    reportprogress "could not read database password from $MWFACONF";
+  else
+    verbose_echo "found database user password.";
+  fi;
+  verbose_echo "finished reading $MWFACONF";
+}
+
+
+function get_database {
+  DBSERVER=`mwfupdate -q variable read wgDBserver $WIKILABEL`;
+  [ $? -gt 0 ] && print_error "$E_OTHER" "problem finding database server";
+  [ "$DBSERVER" = "localhost" ] || print_error "$E_OTHER" "sorry, we can only handle local database servers";
+  WIKIDB=`mwfupdate -q variable read wgDBname $WIKILABEL`;
+  [ $? -gt 0 ] && print_error "$E_OTHER" "problem finding database name";
+}
+
+
+function chk_credentials {
+  # we should have credentials, or we're going to guess them
+  if [ -z "$MYSQLUSER" ]; then
+    if [ -z "$MYSQLPASSWORD" ]; then
+      # no credentials specified; last ditch effort:
+      reportprogress "no credentials specified - will use those in LocalSettings.php";
+      MYSQLUSER=`mwfupdate variable read wgDBuser $WIKILABEL`;
+      MYSQLPASSWORD=`mwfupdate variable read wgDBpassword $WIKILABEL`;
+    fi;
+  fi;
+  [ -z "$MYSQLUSER" ] && print_error "$E_CREDENTIALERROR" "no valid database user specified";
+  [ -z "$MYSQLPASSWORD" ] && print_error "$E_CREDENTIALERROR" "no valid database password specified";
+  mysql -u $MYSQLUSER -p$MYSQLPASSWORD -s -e "connect $WIKIDB;"
+  [ $? -gt 0 ] && \
+    print_error "$E_CREDENTIALERROR" "ERROR: cannot connect to database $WIKIDB with MySQL user $MYSQLUSER";
+  verbose_echo "Can connect to database $WIKIDB with MySQL user $MYSQLUSER"
+}
+
+
+function chk_paths {
+  # we have as temporary directory the current dir or a specified directory; lets check it
+  [ -d $TEMPPATH ] || print_error "$E_OTHER" "temporary directory $TEMPPATH not a valid directory";
+  [ -w $TEMPPATH ] || print_error "$E_OTHER" "temporary directory $TEMPPATH not a writable directory";
+  # we have as backup target directory the current dir or a specified directory; lets check it
+  [ -d $BACKUPPATH ] || print_error "$E_OTHER" "backup target directory $BACKUPPATH not a valid directory";
+  [ -w $BACKUPPATH ] || print_error "$E_OTHER" "backup target directory $BACKUPPATH not a writable directory";
+}
+
+
+function chk_backupname {
+  if [ "x$BACKUPNAME" = "x" ]; then
+    # no name specified, so create default backup name
+    BACKUPNAME="$WIKILABEL-$DATUM";
+    verbose_echo "generated backup file name: $BACKUPNAME";
+  else
+    # future versions of this command might check if a specified backup
+    # name is a valid filename
+    verbose_echo "using backup file name $BACKUPNAME";
+  fi;
+  # let's check if we will be able to write the backup file
+  [ -f "$BACKUPPATH/${BACKUPNAME}.$COMPRES_EXT" ] && print_error "$E_OTHER" \
+     "backup file $BACKUPPATH/${BACKUPNAME}.$COMPRES_EXT already exists - no backup made";
+}
+
+
+function create_tempdir {
+  cd $TEMPPATH;
+  # let's try to create a random subdir
+  TEMPDIR="";
+  COUNTER=0;
+  while [ "x$TEMPDIR" = "x" ]; do
+    TEMPDIR="$RANDOM";
+    verbose_echo "generated TEMPDIR $TEMPDIR"
+    if [ -d $TEMPDIR ]; then
+      # aie, tempdir already exists! Cannot have that
+      TEMPDIR="";
+      let "COUNTER += 1";
+      [ $COUNTER -gt 1000 ] && print_error "$E_OTHER" "cannot create a valid, nonexisting temporary directory";
+    fi;
+  done;
+  mkdir $TEMPDIR;
+  cd $TEMPDIR;
+  verbose_echo "storing temporary files in $TEMPPATH/$TEMPDIR"
+}
+
+
+function make_backup {
+	
+  # backup MySQL database
+  BACKUPFILE="$TEMPPATH/$TEMPDIR/${WIKILABEL}.sql"
+  verbose_echo "creating MySQL backup in file $BACKUPFILE";
+  mysqldump -u $MYSQLUSER -p$MYSQLPASSWORD --add-drop-table -B $WIKIDB > $BACKUPFILE;
+
+
+  # backup LocalSettings.php
+  verbose_echo "backing up wiki configuration file $LOCALSETTINGS";
+  cp -p $LOCALSETTINGS "$TEMPPATH/$TEMPDIR/LocalSettings.php";
+
+  # backup AdminSettings.php, if they were used in the invocation of this command
+  if [ ! -z $MWFACONF ]; then
+    verbose_echo "backing up credentials file $MWFACONF";
+    MWFACONFFILE=`basename $MWFACONF`;
+    cp -p $MWFACONF "$TEMPPATH/$TEMPDIR/$MWFACONFFILE";
+  fi;
+
+  # backup web configuration, if instructed so
+  if [ "$WEBCONFIG" = "true" ]; then
+    APACHECONFIG="$MWFCONFDIR/$WIKILABEL/apache.conf";
+    if [ ! -r "$APACHECONFIG" ]; then
+      reportprogress "WARNING: could not read $APACHECONFIG";
+    else
+      verbose_echo "backing up web configuration file $APACHECONFIG";
+      cp -p "$APACHECONFIG" "$TEMPPATH/$TEMPDIR/apache.conf";
+    fi;
+  fi;
+  
+  # backup data directory, if instructed so
+  if [ $DATADIR = "true" ]; then
+    DATAPATH=`mwfls -q datapath[$WIKILABEL]`;
+    if [ ! -d "$DATAPATH" ]; then
+      reportprogress "WARNING: could not retrieve valid data directory for $WIKILABEL";
+    else
+      verbose_echo "backup up data directory $DATAPATH";
+      tar cPf "$TEMPPATH/$TEMPDIR/datadir.tar" "$DATAPATH";
+    fi;
+  fi;
+  
+  # backup complex extensions, if instructed so
+  if [ $COMPLEXEXT = "true" ]; then
+    COMPLEXPATH=`mwfls -q codepath[$WIKILABEL]`"/$MWFCOMPLEXDIR";
+    if [ -d $COMPLEXPATH ]; then
+      verbose_echo "backing up complex extension directory $COMPLEXPATH";
+      tar cPf "$TEMPPATH/$TEMPDIR/complexextensions.tar" "$COMPLEXPATH";
+    else
+      reportprogress "WARNING: could not retrieve valid complex extension directory for $WIKILABEL";
+    fi;
+  fi;
+
+  # make XML backups, if instructed so
+  if [ $NUMXMLBACKUPS -gt 0 ]; then
+    # apparently we need one or more XML backups
+    if [ -z "$MWFACONF" ]; then
+      reportprogress "WARNING: no admin credentials AdminSettings.php provided; no XML backup made";
+    else
+      # we have credentials; can we backup?
+      DUMPSCRIPTPATH=`mwfls -q codepath[$WIKILABEL]`"/maintenance";
+      if [ ! -d "$DUMPSCRIPTPATH" ]; then
+        reportprogress "WARNING: cannot find directory $DUMPSCRIPTPATH; no XML backup made";
+      else
+        if [ ! -r "$DUMPSCRIPTPATH/dumpBackup.php" ]; then
+          reportprogress "WARNING: cannot find dumpBackup.php in directory $DUMPSCRIPTPATH; no XML backup made";
+        else
+          # we can read dumpBackup.php; let's backup
+          cd $DUMPSCRIPTPATH;
+          XMLBACKUP=0;
+          CONF="conf $LOCALSETTINGS";
+          ACONF="aconf $MWFACONF";
+          if [ "$BEQUIET" = "true" ]; then
+            # user specified that he wants the least amount of output 
+            # so we quiet down dumpBackup.php
+            XMLQUIET="--quiet";
+          else
+            XMLQUIET="";
+          fi;
+          # now we can loop through all the XML backup types requested
+          while [ $XMLBACKUP -lt $NUMXMLBACKUPS ]; do
+            let "XMLBACKUP += 1";
+            TYPE="${XMLBACKUPTYPE[$XMLBACKUP]}";
+            verbose_echo "backing up the database using XML type $TYPE";
+            XMLBACKUPFILE="$TEMPPATH/$TEMPDIR/$WIKILABEL-$TYPE.xml";
+            verbose_echo "creating XML backup in file $XMLBACKUPFILE";
+            php dumpBackup.php --$TYPE $XMLQUIET --$CONF --$ACONF > $XMLBACKUPFILE;
+            RESULT=$?;
+            [ $RESULT -gt 0 ] && reportprogress "WARNING: php reported error $RESULT creating XML $TYPE backup";
+          done;
+        fi;
+      fi;
+    fi;
+  fi;
+
+  # Now, create the metadata file
+  METADATA="$TEMPPATH/$TEMPDIR/backup-metadata.txt";
+  echo "MediaWikiFarm backup" > "$METADATA";
+  echo "********************" >> "$METADATA";
+  echo "Backup date/time       = $DATUMNICE" >> "$METADATA";
+  echo "MediaWikiFarm instance = $WIKILABEL" >> "$METADATA";
+  echo "Database TYPE          = MySQL" >> "$METADATA";
+  echo "         SERVER        = $DBSERVER" >> "$METADATA";
+  echo "         DATABASE NAME = $WIKIDB" >> "$METADATA";
+  echo "         DATABASE USER = $MYSQLUSER" >> "$METADATA";
+  echo "" >> "$METADATA";
+  echo "Backup utility called with these parameters:" >> "$METADATA";
+  echo "  $CMDLINEPARAMS" >> "$METADATA";
+  echo "" >> "$METADATA";
+  
+  # Note that we don't include the password used for the backup (security)
+  if [ $MWFDATA = "true" ]; then
+    # backup MWF specific data in the metadata file
+    echo "" >> "$METADATA";
+    echo "mediawikifarm.conf data:" >> "$METADATA";
+    echo "************************" >> "$METADATA";
+    # all relevant lines from mediawikifarm.conf
+    grep "$WIKILABEL" "$MWFCONFIG" >> "$METADATA";
+    echo "" >> "$METADATA";
+    echo "enabled extensions:" >> "$METADATA";
+    echo "*******************" >> "$METADATA";
+    # all enabled extensions, with their MWF type and requireonce statement
+    mwfextls -t -r "$WIKILABEL" >> "$METADATA";
+  fi;
+  
+  # Finally, pack up all elements of the backup in a suitably compressed archive
+  reportprogress "compressing backup with $COMPRESSIONTOOL $COMPRES_OPT"
+  cd "$TEMPPATH/$TEMPDIR";
+  if [ "$COMPRESSION" = "tar" ]; then
+    tar "${COMPRES_OPT}Pf" "$BACKUPPATH/${BACKUPNAME}.tar" --remove-files *;
+  else
+    tar cPf - --remove-files * | "$COMPRESSIONTOOL" $COMPRES_OPT > "$BACKUPPATH/${BACKUPNAME}.$COMPRES_EXT";
+  fi;
+  chmod o= "$BACKUPPATH/${BACKUPNAME}.$COMPRES_EXT";
+  cd "$CURRENTDIR";
+}
+
+
+function cleanup {
+  # remove the temporary directory
+  verbose_echo "removing $TEMPPATH/$TEMPDIR";
+  rm -rf "$TEMPPATH/$TEMPDIR";
+}
+
+
+######################################################################
+ 
+# Handle all parameters, if any
+CMDLINEPARAMS=$@;
+
+if [ $# -gt 0 ]; then
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --copyright)             print_version; print_copyright; exit 0;;
+      -V|--version)            print_version; exit 0;;
+      -h|--help)               print_help; exit 0;;
+      -A|--aconf)              if [ $# -lt 2 ]; then
+                                 print_error 1 "missing parameter after $1";
+                               else
+                                 shift; MWFACONF=$1; shift;
+                               fi;;
+      -c|--compress)           if [ $# -lt 2 ]; then
+                                 print_error 1 "missing parameter after $1";
+                               else
+                                 shift; COMPRESSION=$1; shift;
+                               fi;;
+      -d|--data-directory)     shift; DATADIR="true";;
+      -e|--complex-extensions) shift; COMPLEXEXT="true";;
+      -m|--mwfdata)            shift; MWFDATA="true";;
+      -n|--name)               if [ $# -lt 2 ]; then
+                                 print_error 1 "missing parameter after $1";
+                               else
+                                 shift; BACKUPNAME=$1; shift;
+                               fi;;
+      -p|--path)               if [ $# -lt 2 ]; then
+                                 print_error 1 "missing parameter after $1";
+                               else
+                                 shift; BACKUPPATH=$1; shift;
+                               fi;;
+      -P|--password)           if [ $# -lt 2 ]; then
+                                 print_error 1 "missing parameter after $1";
+                               else
+                                 shift; MYSQLPASSWORD=$1; shift;
+                               fi;;
+      -q|--quiet)              shift; BEQUIET="true";;
+      -t|--temppath)           if [ $# -lt 2 ]; then
+                                 print_error 1 "missing parameter after $1";
+                               else
+                                 shift; TEMPPATH=$1; shift;
+                               fi;;
+      -U|--user)               if [ $# -lt 2 ]; then
+                                 print_error 1 "missing parameter after $1";
+                               else
+                                 shift; MYSQLUSER=$1; shift;
+                               fi;;
+      -v|--verbose)            shift; VERBOSE="true";;
+      -w|--webconfig)          shift; WEBCONFIG="true";;
+      -x|--xml)                if [ $# -lt 2 ]; then
+                                 print_error 1 "missing parameter after $1";
+                               else
+                                 shift;
+                                 let "NUMXMLBACKUPS += 1";
+                                 chk_xmlbackuptype "$1";
+                                 XMLBACKUPTYPE[$NUMXMLBACKUPS]=$1; shift;
+                               fi;;
+      *)                       WIKILABEL=$1; shift;
+                               chk_wikilabel;
+                               [ $# -gt 0 ] && print_error $E_UNKNOWNPARAM "unknown parameter $1 after $WIKILABEL";;
+    esac;
+  done
+fi;
+
+[ -z "$WIKILABEL" ] && print_error $E_OTHER "no wikilabel specified";
+[ -z "$MWFACONF" ] || chk_aconf;
+get_database;
+chk_credentials;
+chk_compressiontool;
+chk_paths;
+chk_backupname;
+# everything looks OK, let's begin
+create_tempdir;
+make_backup;
+cleanup;
+
+exit 0

@@ -1,0 +1,494 @@
+#!/bin/bash
+#
+# edit/update a mediawikifarm instance configuration (operates on LocalSettings.php)
+# needs a command, a parameter and a wiki instance
+#
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+
+SCRIPTNAME=`basename $0`;
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf";
+MWFNULLFILE="/tmp/mwf_null";
+QUIET="false";
+RELAXED="false";
+REMOVEQUOTES="false";
+
+E_MULTIPLEFOUND="1";
+E_CONFIGFILEERROR="2";
+E_UNKNOWNPARAM="3";
+E_VARNOTFOUND="4";
+E_WEBCONFIGFILEERROR="5";
+E_OTHER="99";
+
+
+function print_error {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  [ $RELAXED = "false" ] && echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function print_help {
+  echo "$SCRIPTNAME can update LocalSettings.php for a wiki instance [wiki], depending";
+  echo "  on the command specified after $SCRIPTNAME";
+  echo "$SCRIPTNAME move [wiki]";
+  echo "  gets the LocalSettings.php from the config directory of instance [wiki]";
+  echo "  and moves it to the mediawikifarm config directory";
+  echo "$SCRIPTNAME query [snippet] [wiki]";
+  echo "  returns the line number(s) and line(s) of LocalSettings.php that contain";
+  echo "  the exact phrase [snippet]. Remember to correctly quote [snippet] when it";
+  echo "  contains spaces and/or (single or double) quotes";
+  echo "$SCRIPTNAME add [linenumber] [line] [wiki]";
+  echo "  adds the line [line] to line number [linenumber] in LocalSettings.php. Line";
+  echo "  number 0 means at the end of the file. Remember to correctly quote [line]";
+  echo "  when it contains spaces and/or (single or double) quotes";
+  echo "$SCRIPTNAME remove [linenumber] [wiki]";
+  echo "  removes the line at [linenumber] from LocalSettings.php.";
+  echo "$SCRIPTNAME scriptpath <path> <wiki>";
+  echo '  sets $wgScriptPath in both LocalSettings.php and apache.conf to <path>';
+  echo '  (make sure to add the leading slash /)';
+  echo "$SCRIPTNAME [-f <file>] [-q] variable read <variable> [wiki]";
+  echo "  returns the value of <variable> from LocalSettings.php. <variable>";
+  echo "  can be literal and quoted (e.g. \"variable read '$wgScriptPath'\") or you can";
+  echo "  leave off the dollarsign (e.g. \"variable read wgScriptPath\"). If option";
+  echo "  -f <file> is specified, then a variable is read from that file instead of from";
+  echo "  LocalSettings.php; note that in this case [wiki] is getting ignored. If option";
+  echo "  -q is specified, then the variable will be returned without surrounding quotes";
+  echo "$SCRIPTNAME variable set <variable> <value> [wiki]";
+  echo "  sets the value of <variable> in LocalSettings.php to <value>. Again, <variable>";
+  echo "  can be literal and quoted, or specified without the dollar sign. The value will be put";
+  echo "  in as you specify it, but observes Bash quoting. If you specify 'false' the declaration";
+  echo "  will be \"variable = false\"; if you need quotes, then double-quote: \"'false'\" or";
+  echo "  '\"false\"'. Note: if the value is not in LocalSettings.php, it will be added to";
+  echo "  end of the file.";
+  echo "$SCRIPTNAME variable remove <variable> [wiki]";
+  echo "  will find <variable> in LocalSettings.php and remove the line on which it is declared.";
+  echo "$SCRIPTNAME [-V or --version or -h or --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function stripleadingwhitespace {
+  # strip leading whitespace from LINE
+  LINE="${LINE#"${LINE%%[![:space:]]*}"}";
+}
+
+
+function striptrailingwhitespace {
+  # strip trailing whitespace from LINE
+  LINE="${LINE%"${LINE##*[![:space:]]}"}";
+}
+
+function stripquotes {
+  # strip single or double quotes, if they are enclosing the text in $LINE
+  let "LINELENGTH = ${#LINE} - 1";
+  if [ "x${LINE:0:1}" = "x${LINE:$LINELENGTH:1}" ]; then
+    #first and last character of LINE are identical
+    let "LINELENGTH -= 1";
+    case "${LINE:0:1}" in
+      "'"|'"') LINE=${LINE:1:$LINELENGTH};;
+    esac;
+  fi;
+}
+
+function chk_wikilabel {
+  [ -z $WIKILABEL ] && print_error "$E_OTHER" "no <wikilabel> specified";
+  LABELEXISTS=`mwfls -i $WIKILABEL`;
+  [ $? -gt 0 ] && print_error "$E_OTHER" "cannot verify instance $WIKILABEL";
+  [ "x$LABELEXISTS" = "x$WIKILABEL" ] || print_error "$E_OTHER" "$WIKILABEL not a unique label";
+}
+
+
+function chk_localsettings {
+  if [ -z "$LOCALSETTINGS" ]; then
+    # apparently the LocalSettings.php file is not specified elsewhere so we do it here
+    # (this is unnecessary if AdminSettings.php is specified using "-f <file>")
+    LOCALSETTINGS="$MWFCONFDIR/$WIKILABEL/LocalSettings.php"
+  fi;
+  # let's see if we can actually read LocalSettings.php
+  [ ! -f "$LOCALSETTINGS" ] && print_error "$E_CONFIGFILEERROR" "$LOCALSETTINGS is not a regular file";
+  [ ! -r "$LOCALSETTINGS" ] && print_error "$E_CONFIGFILEERROR" "cannot read $LOCALSETTINGS";
+}
+
+
+function chk_apachesettings {
+  # let's see if we can actually read apache.conf
+  APACHESETTINGS="$MWFCONFDIR/$WIKILABEL/apache.conf"
+  [ ! -f "$APACHESETTINGS" ] && print_error "$E_WEBCONFIGFILEERROR" "$APACHESETTINGS is not a regular file";
+  [ ! -r "$APACHESETTINGS" ] && print_error "$E_WEBCONFIGFILEERROR" "cannot read $APACHESETTINGS";
+}
+
+
+function chk_variable {
+  # see if the variable supplied is "valid";
+  [ ${#VARSTRING} -lt 2 ] && print_error "$E_OTHER" "variable $VARSTRING contains too few characters";
+  if [ "x${VARSTRING:0:1}" = 'x$' ]; then
+    # OK, strip the dollar to prevent quoting issues furtheron
+    VARSTRING="${VARSTRING:1}";
+  fi;
+}
+
+
+function extract_value_from_line {
+  # apparently we've found a line that starts with the variable.
+  # strip it from LINE (including the $ that's still in front)
+  F=${#VARSTRING}; let "F += 1";
+  LINE=${LINE:$F};
+  stripleadingwhitespace;
+  striptrailingwhitespace;
+  # now the first character should be a "="
+  if [ "x${LINE:0:1}" = "x=" ]; then
+    # strip that "=" and all following whitespace
+    LINE=${LINE:1};
+    stripleadingwhitespace;
+    # currently we assume the rest of the line is ONLY the value of the variable, and does not
+    # contain a remark, etc. Thus the line should end with a semicolon.
+    LINELENGTH=${#LINE};
+    let "LINELENGTH -= 1";
+    if [ "x${LINE:$LINELENGTH:1}" = "x;" ]; then
+      # strip the last character because it's a semicolon
+      LINE="${LINE:0:$LINELENGTH}";
+      let "FOUND += 1";
+      VARVALUE="$LINE";
+      LINENUMFOUND="$LINENUM";
+    fi;
+  fi;
+}
+
+
+function read_variable_core {
+  VARSTRING=$1;
+  # this function finds the variable (put through as parameter $1 without leading $ sign)
+  # and returns it in global variable VARVALUE (including quotes, if they were set)
+  # first we find variable in the localsettingsfile
+  SEARCH="^\$$VARSTRING";
+  FOUND=0;
+  LINENUM=0;
+  while read LINE; do
+    let "LINENUM += 1";
+    stripleadingwhitespace;
+    LINE=`echo "$LINE" | grep "$SEARCH"`;
+    if [ $? -eq 0 ]; then
+      # extract the variable value from LINE
+      extract_value_from_line;
+    fi;
+  done <$LOCALSETTINGS;
+  # FOUND now contains the number of variables found - should be one
+  # LINENUMFOUND contains the linenumber (1-based) of the last variable found
+}
+
+
+function read_variable {
+  read_variable_core $1;
+  [ "$FOUND" -eq 0 ] && print_error "$E_VARNOTFOUND" "variable $VARSTRING not found in $LOCALSETTINGS";
+  [ "$FOUND" -gt 1 ] && echo "warning: multiple values for $VARSTRING found in $LOCALSETTINGS";
+  # if we get to here, reading the variable must have resulted in a single variable value
+  # contained in VARVALUE (and the linenumber on which it occurs in LINENUMFOUND)
+}
+
+
+function set_variable {
+  NEWLINE="\$$VARSTRING = $VARVALUE;";
+  read_variable_core "$VARSTRING";
+  CURRENTVAL="$VARVALUE";
+  case $FOUND in
+    0) # variable does not exist in LocalSettings.php,
+       # let's add the variable to the end
+       add_line 0 "$NEWLINE";;
+    1) # variable exists one time in LocalSettings.php
+       # simply remove the existing variable declaration,
+       remove_line "$LINENUMFOUND" "$WIKILABEL";
+       # and add our new declaration.
+       add_line "$LINENUMFOUND" "$NEWLINE";;
+    *) print_error "$E_MULTIPLEFOUND" "cannot set variable that's present multiple times";;
+  esac;
+}
+
+
+function remove_variable {
+  # in order to remove a variable, it first must exist!
+  read_variable "$VARSTRING";
+  CURRENTVAL="$VARVALUE";
+  case $FOUND in
+    0) # variable does not exist in LocalSettings.php
+       print_error "$E_VARNOTFOUND" "cannot remove variable $VARSTRING as it is not there";;
+    1) # variable exists one time in LocalSettings.php
+       # simply remove the existing variable declaration,
+       remove_line "$LINENUMFOUND" "$WIKILABEL";;
+    *) # ouch! variable exists multiple times!
+       print_error "$E_MULTIPLEFOUND" "cannot remove variable that's present multiple times";;
+  esac;
+}
+
+
+function linenumbervalidation {
+  # takes 3 parameters: minimum number of lines allowed, linenumber to check, and a file (location)
+  # this function exits with an error, EXCEPT when the parameter $2 is between $1 and
+  # the actual number of lines in file $3
+  MINLENGTH=$1;
+  LINENUM=$2;
+  LINEFILE=$3;
+  [ "$LINENUM" -lt "$MINLENGTH" ] && \
+    print_error "$E_OTHER" "line number $LINENUM too small (less than $MINLENGTH)";
+  ACTUALLINENUM=`wc -l $LINEFILE | cut -d ' ' -f 1`;
+  [ "$LINENUM" -gt "$ACTUALLINENUM" ] && \
+    print_error "$E_OTHER" "line number $LINENUM higher than $ACTUALLINENUM (line count of $LINEFILE)";
+}
+
+
+function add_line {
+  # takes two parameters: the line number at which to add the line (1-based), and the line
+  # itself - that must be quoted if it contains spaces etc.
+  ALINENUMBER="$1";
+  if [ $# -eq 2 ]; then
+    # Beause the line must be quoted, it should show up as a single parameter
+    ALINE="$2";
+    # now check if we haven't gotten an empty line
+    if [ ${#ALINE} -gt 0 ]; then
+      MESSAGE="the";
+    else
+      # we'll add an empty line. Note: we cannot insert an empty line in the first
+      # line of the file
+      [ $ALINENUMBER -eq 1 ] && print_error "$E_OTHER" "cannot insert empty line in the first line of $LOCALSETTINGS";
+      ALINE="";
+      MESSAGE="empty"
+    fi;
+  else
+    print_error "$E_OTHER" "internal function add_line called with $# parameters instead of 2 parameters";
+  fi;
+
+  # check if the line number is valid (give 0 as acceptable minimum length)
+  linenumbervalidation 0 $ALINENUMBER $LOCALSETTINGS;
+  # So either we have a valid line number or the number is zero (append to end)
+  if [ "$ALINENUMBER" -eq 0 ]; then
+    echo "$ALINE" >> $LOCALSETTINGS;
+  else
+    # we're going to insert the line straight in using sed
+    EXTENSION=$RANDOM;
+    if [ $MESSAGE = "empty" ]; then
+      let BLINENUMBER=ALINENUMBER-1;
+      SEDCOMMAND="-e ${BLINENUMBER}G"
+    else
+      SEDCOMMAND="-e ${ALINENUMBER}i$ALINE";
+    fi;
+    sed "$SEDCOMMAND" < "$LOCALSETTINGS" > "${LOCALSETTINGS}.$EXTENSION"
+    SEDRESULT=$?
+    if [ $SEDRESULT -eq 0 ]; then
+      # sed command completed succesfully, go use the resultfile
+      rm $LOCALSETTINGS;
+      mv ${LOCALSETTINGS}.$EXTENSION $LOCALSETTINGS;
+    else
+      print_error $SEDRESULT "could not insert $MESSAGE line in $LOCALSETTINGS";
+    fi;
+  fi;
+}
+
+
+function remove_line {
+  # takes one parameter: linenumber to remove (1-based)
+  RLINENUMBER="$1";
+  # check if the line number is valid (give 1 as acceptable minimum length)
+  linenumbervalidation 1 $RLINENUMBER $LOCALSETTINGS;
+  # in-place line deletion
+  SEDCOMMAND="$RLINENUMBER d";
+  sed -i "$SEDCOMMAND" $LOCALSETTINGS;
+  SEDRESULT=$?
+  [ $SEDRESULT -gt 0 ] && print_error $SEDRESULT "problem removing line $RLINENUMBER from $LOCALSETTINGS";
+}
+
+
+function find_snippet {
+  # Beause the snippet must be quoted, it should show up as a single parameter
+  SNIPPET=$1;
+  # doublecheck: after the snippet should only be the wikilabel
+  if [ ! "x$2" = "x$WIKILABEL" ]; then
+    echo "found extra command line parameter $2";
+    print_error "$E_OTHER" "did you forget to enclose the snippet in (double) quotes?";
+  fi;
+  LINENUM=0;
+  FOUND=0;
+  # now check each line of LocalSettings.php for SNIPPET
+  while read LINE; do
+    let "LINENUM += 1";
+    echo "$LINE" | grep "$SNIPPET" > "$MWFNULLFILE";
+    if [ $? = 0 ]; then
+      echo "$LINENUM $LINE";
+      let "FOUND += 1";
+    fi;
+  done <$LOCALSETTINGS;
+  [ $FOUND -eq 0 ] && print_error "$E_OTHER" "snippet not found in $LOCALSETTINGS";
+}
+
+
+function move_settingsfile {
+  SOURCELOCATION="`mwfls -q codepath[$WIKILABEL]`/config";
+  TARGETLOCATION="$MWFCONFDIR/$WIKILABEL";
+  # first check if it does not already exist in the target location
+  [ -f "$TARGETLOCATION/LocalSettings.php" ] && print_error "$E_OTHER" "LocalSettinggs.php already exists in $TARGETLOCATION";
+  [ -f "$SOURCELOCATION/LocalSettings.php" ] || print_error "$E_OTHER" "cannot find LocalSettings.php in $SOURCELOCATION";
+  mv $SOURCELOCATION/LocalSettings.php $TARGETLOCATION;
+  E_MOVE=$?;
+  [ $E_MOVE -eq 0 ] || \
+    print_error $E_MOVE "problem moving LocalSettings.php from $SOURCELOCATION to $TARGETLOCATION";
+}
+
+
+function set_scriptpath {
+  # remove quotes around the requested path, if any
+  LINE=$SCRIPTPATH; stripquotes; SCRIPTPATH=$LINE;
+  # add the leading slash, if it is absent
+  [ ${SCRIPTPATH:0:1} = "/" ] || SCRIPTPATH="/$SCRIPTPATH";
+  
+  chk_apachesettings;
+  read_variable "wgScriptPath";
+  LINE="$VARVALUE"; stripquotes;
+  CURRENTSCRIPTPATH="$LINE";
+  CURRENTALIAS=`grep "^Alias " $APACHESETTINGS | cut -d ' ' -f 2`;
+  [ "x$CURRENTSCRIPTPATH" = "x$CURRENTALIAS" ] || \
+    print_error "$E_VARNOTFOUND" \
+      "Current Apache alias $CURRENTALIAS in $APACHESETTINGS does not match alias $CURRENTSCRIPTPATH in $LOCALSETTINGS";
+  
+  # We've read the current value for scriptpath, now set it in LocalSettings.php...
+  VARSTRING="wgScriptPath"; VARVALUE='"'$SCRIPTPATH'"';
+  set_variable;
+  # ... and in apache.conf
+  sed "s,Alias $CURRENTSCRIPTPATH,Alias $SCRIPTPATH,g" < $APACHESETTINGS > $APACHESETTINGS.tmp;
+  [ $? -gt 0 ] && print_error "$E_OTHER" "problem editing $APACHESETTINGS";
+  mv $APACHESETTINGS.tmp $APACHESETTINGS;
+  echo "changed MediaWiki scriptpath to $SCRIPTPATH";
+  echo "- do not forget to restart your webserver";
+}
+
+######################################################################
+
+# Handle all options, if any
+if [ $# -gt 0 ]; then
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --copyright)    print_version; print_copyright; exit 0;;
+      -V|--version)   print_version; exit 0;;
+      -h|--help)      print_help; exit 0;;
+      -f|--file)      if [ $# -lt 2 ]; then
+                        print_error 1 "missing parameter after $1";
+                      else
+                        # accept the specified file as the "LocalSettings.php" to investigate
+                        shift; LOCALSETTINGS=$1; shift;
+                      fi;;
+      -q|--no-quotes) REMOVEQUOTES="true"; shift;;
+      -r|--relaxed)   # relaxed means we'll exit quietly when there's an error
+                      # needed for recursive calls
+                      RELAXED="true"; shift;; 
+      *)              # apparently we're done with all available options
+                      break;;
+    esac;
+  done
+else
+  print_error "$E_OTHER" "$SCRIPTNAME cannot run without options, command, parameter and/or wiki instance";
+fi;
+
+# If we get to here, then the command has been entered such that the
+# command line must at least contain a command and end with a wiki instance
+# (Because we've handled mwfupdate -V et cetera)
+
+[ $# -lt 2 ] && \
+  print_error "$E_OTHER" "$SCRIPTNAME cannot run without at least a command and wiki instance";
+for param in "$@"; do
+  WIKILABEL=$param;
+done;
+chk_wikilabel;
+
+# Now handle the command itself (and remember that the wikilabel is still attached
+# to the end of the command line)
+COMMAND=$1; shift;
+
+case $COMMAND in
+  add)          [ $# -lt 2 ] && print_error "$E_OTHER" "command add needs line number, wiki instance and optionally quoted line";
+                [ $# -gt 3 ] && print_error "$E_OTHER" "too many parameters (only line number, line and wiki instance expected)";
+                LINENUMBER="$1"; shift;
+                if [ $# -lt 2 ]; then
+                  unset LINE;
+                else
+                  LINE="$1"; shift;
+                fi;
+                # doublecheck: only the wikilabel should be left
+                if [ ! "x$1" = "x$WIKILABEL" ]; then
+                   echo "found extra command line parameter $1";
+                   print_error "$E_OTHER" "did you forget to enclose the line in (double) quotes?";
+                fi;
+                chk_localsettings;
+                add_line "$LINENUMBER" "$LINE";;
+  move)         move_settingsfile;;
+  query)        if [ $# -lt 2 ]; then
+                  print_error "$E_OTHER" "command query needs (quoted) snippet and wikilabel";
+                else
+                  PARAMETER="$1"; shift;
+                fi;
+                chk_localsettings;
+                find_snippet "$PARAMETER" $@;;
+  remove)       if [ $# -eq 2 ]; then
+                  LINENUMBER="$1";
+                else
+                  print_error "$E_OTHER" "command remove needs linenumber and wikilabel - you provided \"$@\"";
+                fi;
+                chk_localsettings;
+                remove_line "$LINENUMBER";;
+  scriptpath)   if [ $# -lt 2 ]; then
+                  print_error "$E_OTHER" "command scriptpath needs path and wikilabel";
+                else
+                  SCRIPTPATH="$1"; shift;
+                fi;
+                chk_localsettings;
+                set_scriptpath;;
+  variable)     SUBCOMMAND=$1; shift;
+                chk_localsettings;
+                case $SUBCOMMAND in
+                  read)   [ $# -eq 2 ] || print_error "$E_OTHER" "command \"variable read\" needs a single variable name";
+                          VARSTRING=$1;
+                          chk_variable; read_variable "$VARSTRING";
+                          if [ "$REMOVEQUOTES" = "true" ]; then
+                            LINE="$VARVALUE"; stripquotes; VARVALUE="$LINE";
+                          fi;
+                          echo "$VARVALUE";;
+                  set)    [ $# -eq 3 ] || print_error "$E_OTHER" \
+                             "command \"variable set\" needs a single variable name plus a single (quoted) value";
+                          VARSTRING=$1; VARVALUE=$2;
+                          chk_variable; set_variable;;
+                  remove) [ $# -eq 2 ] || print_error "$E_OTHER" "command \"variable remove\" needs a single variable name";
+                          VARSTRING=$1; 
+                          remove_variable;;
+                  *)      print_error "$E_OTHER" "can't understand command \"$COMMAND $SUBCOMMAND\"";;
+                esac;;
+  *)            print_error "$E_OTHER" "cannot understand command $COMMAND - use $SCRIPTNAME -h for help";;
+esac;
+
+exit 0

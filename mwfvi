@@ -1,0 +1,111 @@
+#!/bin/bash
+#
+# edit/update a mediawikifarm instance configuration (operates on LocalSettings.php)
+#
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+
+SCRIPTNAME=`basename $0`;
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf";
+
+E_MULTIPLEFOUND="1";
+E_CONFIGFILEERROR="2";
+E_UNKNOWNPARAM="3";
+E_VARNOTFOUND="4";
+E_WEBCONFIGFILEERROR="5";
+E_OTHER="99";
+
+
+function print_error {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function print_help {
+  echo "$SCRIPTNAME <wiki> invokes the VI editor, in order for the user to update LocalSettings.php";
+  echo "  for a wiki instance <wiki>";
+  echo "$SCRIPTNAME [-V or --version or -h or --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function chk_wikilabel {
+  [ -z $WIKILABEL ] && print_error "$E_OTHER" "no <wikilabel> specified";
+  LABELEXISTS=`mwfls -i $WIKILABEL`;
+  [ $? -gt 0 ] && print_error "$E_OTHER" "cannot verify instance $WIKILABEL";
+  [ "x$LABELEXISTS" = "x$WIKILABEL" ] || print_error "$E_OTHER" "$WIKILABEL not a unique label";
+}
+
+
+function chk_localsettings {
+  # let's see if we can actually read LocalSettings.php
+  LOCALSETTINGS="$MWFCONFDIR/$WIKILABEL/LocalSettings.php"
+  [ ! -f "$LOCALSETTINGS" ] && print_error "$E_CONFIGFILEERROR" "$LOCALSETTINGS is not a regular file";
+  [ ! -r "$LOCALSETTINGS" ] && print_error "$E_CONFIGFILEERROR" "cannot read $LOCALSETTINGS";
+}
+
+
+function edit_settings {
+  vi $LOCALSETTINGS;
+}
+
+
+
+######################################################################
+
+# Handle all options, if any
+if [ $# -gt 0 ]; then
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --copyright)  print_version; print_copyright; exit 0;;
+      -V|--version) print_version; exit 0;;
+      -h|--help)    print_help; exit 0;;
+      *)            # apparently we're done with all available options
+                    break;;
+    esac;
+  done
+else
+  print_error "$E_OTHER" "$SCRIPTNAME cannot run without options, command, parameter and/or wiki instance";
+fi;
+
+[ $# -eq 1 ] || print_error "$E_UNKNOWNPARAM" "$SCRIPTNAME only takes a single argument <wikilabel>";
+
+WIKILABEL=$1;
+
+chk_wikilabel;
+chk_localsettings;
+edit_settings;
+
+exit 0

@@ -1,0 +1,42 @@
+#!/bin/bash
+
+# restores a mediawikifarm instance from an MWF backup
+
+
+###################################################################################################
+
+BUILDDATE="2009-08-15";
+VER="r00008";
+
+SCRIPTNAME=`basename $0`;
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf";
+
+
+function print_error() {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+function reportprogress {
+  echo " - $@";
+}
+
+
+function print_help {
+  echo "$SCRIPTNAME can restore a wiki instance [wiki]";
+  echo "$SCRIPTNAME [wiki]";
+  echo "  interactively restores instance [wiki]";
+  echo "$SCRIPTNAME [-V or --version or -h or --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+print_error 99 "this command is not implemented yet";
+
+exit 0

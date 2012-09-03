@@ -1,0 +1,141 @@
+#!/bin/bash
+
+# List all defined mediawikifarm instances
+# mwfls -i foo can tell if instance foo exists (empty line + exitcode > 0 if not)
+# mwfls -q <term> can return the value of <term>, e.g. defaultdatapath or datapath[foo]
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+
+SCRIPTNAME=`basename $0`;
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf";
+
+E_MULTIPLEFOUND="1";
+E_CONFIGFILEERROR="2";
+E_UNKNOWNPARAM="3";
+E_OTHER="99";
+
+function print_help {
+  echo "$SCRIPTNAME";
+  echo "  lists all installed wikifarm instances";
+  echo "$SCRIPTNAME [-i or --instance] [wiki]";
+  echo "  returns [wiki] if it is installed, returns nothing if not";
+  echo "$SCRIPTNAME [-q or --question] [term]";
+  echo "  returns the value of [term] from the configuration file \(nothing if not found,";
+  echo "  all values + exit code $E_MULTIPLEFOUND if more than one value found\)";
+  echo "$SCRIPTNAME [-V or --version or -h or --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function print_error {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function chk_configfile {
+  # Check mediawikifarm.conf
+  [ ! -f "$MWFCONFIG" ] && \
+    print_error $E_CONFIGFILEERROR "configuration file $MWFCONFIG not found!";
+
+  [ ! -r "$MWFCONFIG" ] && \
+    print_error $E_CONFIGFILEERROR "cannot read configuration file $MWFCONFIG!";
+}
+
+
+function chk_instance {
+  InstanceKnown="false";
+  for F in `grep "^instance" $MWFCONFIG | cut -d "=" -f2 | tr -d "[:blank:]"`; do
+    [ "$F" = "$INSTANCE" ] && InstanceKnown="true";
+  done;
+  if [ "$InstanceKnown" = "true" ]; then
+    echo "$INSTANCE";
+    exit 0;
+  fi;
+}
+
+
+function chk_question {
+  QuestionAnswered=0;
+  # if the question contains square brackets, our script commands become unhappy
+  # so we must make square brackets be escaped with backslashes
+  QUESTION2=`echo "$QUESTION" | sed "s/\[/\\\\\[/" | sed "s/\]/\\\\\]/"`;
+  for F in `grep "^$QUESTION2" $MWFCONFIG | cut -d "=" -f2 | tr -d "[:blank:]"`; do
+    echo $F;
+    let "QuestionAnswered += 1";
+  done;
+  if [ $QuestionAnswered -eq 1 ]; then
+    exit 0;
+  else
+    exit $E_MULTIPLEFOUND;
+  fi;
+}
+
+
+function list_instances {
+ # print all wiki labels
+ # which are the first equalsign-delimited field after each word "instance,"
+ grep "^instance" $MWFCONFIG | cut -d "=" -f2 | tr -d [:blank:];
+}
+
+
+######################################################################
+
+# Handle all parameters, if any
+[ $# -gt 2 ] && print_error 1 "too many parameters \($#\)";
+
+if [ $# -gt 0 ]; then
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --copyright)   print_version; print_copyright; exit 0;;
+      -V|--version)  print_version; exit 0;;
+      -h|--help)     print_help; exit 0;;
+      -q|--question) [ $# -lt 2 ] && print_error 1 "missing parameter after $1";
+                     shift; QUESTION=$1; shift;
+                     chk_configfile;
+                     chk_question; exit 0;;
+      -i|--instance) [ $# -lt 2 ] && print_error 1 "missing parameter after $1";
+                     shift; INSTANCE=$1; shift;
+                     chk_configfile;
+                     chk_instance; exit 0;;
+      *)             print_error $E_UNKNOWNPARAM "unknown parameter $1";;
+    esac;
+  done;
+else
+  #no parameters? Then list all wiki instances 
+  chk_configfile;
+  list_instances;
+fi;
+
+exit 0

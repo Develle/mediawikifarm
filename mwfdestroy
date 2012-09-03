@@ -1,0 +1,118 @@
+#!/bin/bash
+ 
+# Removes the MWF initial configuration
+# For DEVELOPERS ONLY!!
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCMDDIR="/usr/bin";
+
+function print_help {
+  echo "$SCRIPTNAME";
+  echo "  destroy all wiki instances by deleting their data directories,";
+  echo "  code directories, and the $MWFCONFDIR configuration directory.";
+  echo "  requests you enter \"yes\" for every action.";
+  echo "$SCRIPTNAME [-V | --version | -h | --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function shallwestop {
+  read -p "continue (yes/no)? ";
+  OVERWRITE=`echo "$REPLY" | tr "[:lower:]" "[:upper:]"`;
+  # treat "Y" as "YES" too
+  [ "x$OVERWRITE" = "xY" ] && OVERWRITE="YES"
+  if [ ! "x$OVERWRITE" = "xYES" ]; then
+    echo "OK, halting";
+    exit 0
+  fi;
+}
+
+function removedir {
+  DIR=$1
+  if [ -d $DIR ]; then
+    if [ ! $DIR = $MWSOURCEDIR ]; then
+      echo "removing $DIR with all subdirectories";
+      shallwestop;
+      rm -rf $DIR
+    fi;
+  fi;
+}
+
+
+function removecommands {
+  echo "removing the command files:"
+  ls "$MWFCMDDIR"/mwf*;
+  rm -f "$MWFCMDDIR"/mwf*;
+}
+
+
+######################################################################
+
+# Handle all parameters, if any
+if [ $# -gt 0 ]; then
+  while [ $# -gt 0 ]; do
+    case $1 in
+      --copyright)         print_version; print_copyright; exit 0;;
+      -V|--version)        print_version; exit 0;;
+      -h|--help)           print_help; exit 0;;
+    esac;
+  done
+fi;
+
+
+echo "This command will REMOVE the whole MWF configuration"
+shallwestop;
+
+MWSOURCEDIR=`mwfls -q defaultcodesource`
+echo "MW Source Dir = $MWSOURCEDIR - leaving that one"
+
+for G in `mwfls`; do
+  H=`mwfls -q datapath[$G]`
+  removedir $H
+  I=`mwfls -q codepath[$G]`
+  removedir $I
+done
+
+MWFDATABASEDIR=`mwfls -q defaultdatapath`
+removedir $MWFDATABASEDIR
+
+
+MWFCODEBASEDIR=`mwfls -q defaultcodepath`
+removedir $MWFCODEBASEDIR
+
+removedir $MWFCONFDIR
+
+removecommands
+
+echo "Done";
+exit 0

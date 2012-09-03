@@ -1,0 +1,365 @@
+#!/bin/bash
+
+# enable or disable an available mediawikifarm extension for a particular wiki instance
+# do not forget to create a symlink to this script named "mwfdisext"!
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+
+SCRIPTNAME=`basename $0`;
+DISABLENAME="mwfdisext";
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf";
+MWFEXTCONFIG="$MWFCONFDIR/extensions.available";
+MWFNULLFILE="/tmp/mwf_null";
+MWFSIMPLEDIR="extensions";
+MWFCOMPLEXDIR="complexextensions";
+NOTESFILE="MWF_README";
+IP='$IP'; # funny declaration to work around quoting issues
+
+
+function print_help {
+  # the exact help text depends on how this script is called: with its "hard" name or with
+  # its "soft", symlinked name (i.e. as mwfenext or mwfdisext)
+  echo "$SCRIPTNAME [-r|--relaxed] <extension> <wiki>";
+  if [ "$SCRIPTNAME" = "$DISABLENAME" ]; then
+    echo "  disables the named extension for the given wiki instance";
+    echo "  if you specify -r, then an extension that is not enabled will not";
+  else
+    echo "  enables the named extension for the given wiki instance";
+    echo "  if you specify -r, then an already enabled extension will not";
+  fi;
+  echo "  cause an error but only an informative message";
+  echo "$SCRIPTNAME [-V or --version or -h or --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function print_error {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function reportprogress {
+  echo " - $@";
+}
+
+
+function chk_wikilabel {
+  # check if we know this wiki label
+  LABELEXISTS=`mwfls -i $WIKILABEL`;
+  [ $? -gt 0 ] && print_error 1 "cannot verify $WIKILABEL is a valid wiki instance";
+  [ ${#LABELEXISTS} -gt 0 ] || print_error 1 "$WIKILABEL not a known wiki instance";
+  LOCALSETTINGS="$MWFCONFDIR/$WIKILABEL/LocalSettings.php";
+}
+
+
+function chk_extension_exists {
+  # check if we know this extension. We cannot enable, nor disable, an unknown extension
+  EXTENSION_DESCR=`cat $MWFEXTCONFIG | grep "^$EXTENSION "`;
+  [ $? -gt 0 ] && print_error 1 "$EXTENSION is not a known MWF-registered extension";
+}
+
+  
+function chk_extension_enabled {
+  # check if the extension is or isn't enabled already for the requested wiki instance.
+  # furthermore we want to know what the largest linenumber is where an extension occurs.
+  # read all enabled extensions into one variable (translate linefeeds to pipes
+  # because otherwise they're lost). The complex programming is because we want to invoke
+  # mwfextls only once, as it is really expensive!
+  EXT_ENABLED=`mwfextls -l $WIKILABEL | tr '\n' '|'`;
+  LINENR=0;
+  MAXLINE=0;
+  EXT_FOUND="false";
+  while true; do
+    let "LINENR += 1";
+    SEGMENT=`echo "$EXT_ENABLED" | cut -d '|' -f $LINENR`;
+    # if we've reached the last line of the output, we can stop
+    echo "$SEGMENT" | grep " extension enabled" > "$MWFNULLFILE" && break;
+    echo "$SEGMENT" | grep " extensions enabled" > "$MWFNULLFILE" && break;
+    
+    # otherwise, interpret the current segment of EXT_ENABLED
+    [ "x`echo "$SEGMENT" | cut -d ' ' -f 1`" = "x$EXTENSION" ] && EXT_FOUND="true";
+    
+    # whether we've found the extension or not, we must go through all extensions
+    # to find the highest line number on which an extension occurs
+    SEG_NUM=`echo $SEGMENT | cut -d ' ' -f 2`;
+    [ "$SEG_NUM" -gt "$MAXLINE" ] && MAXLINE=$SEG_NUM;
+  done;
+  
+  # OK so now we know if the extension is already enabled or not. What we now do depends
+  # on whether it was enabled, and whether this script was called to enable or disable it.
+  # Let's see if we must report a warning/error for extension already enabled/disabled:
+  if [ "$SCRIPTNAME" = "$DISABLENAME" ]; then
+    # apparently we must disable the extension
+    if [ $EXT_FOUND = "false" ]; then
+      if [ $RELAXED = "true" ]; then
+        reportprogress "extension $EXTENSION is already disabled on instance $WIKILABEL";
+        exit 0;
+      else
+        print_error 1 "extension $EXTENSION is already disabled on instance $WIKILABEL";
+      fi;
+    fi;
+  else
+    # apparently we must enable the extension
+    if [ $EXT_FOUND = "true" ]; then
+      if [ $RELAXED = "true" ]; then
+        reportprogress "extension $EXTENSION is already enabled on instance $WIKILABEL";
+        exit 0;
+      else
+        print_error 1 "extension $EXTENSION is already enabled on instance $WIKILABEL";
+      fi;
+    fi;
+  fi;
+}
+
+
+function insert_reqonceline {
+  # let's determine the line on which to put the REQ_ONCE statement
+  if [ "$MAXLINE" -gt 0 ]; then
+    # there are one or more extensions enabled already;
+    # let's put this new one directly after the last one
+    let "MAXLINE += 1";
+    # but watch it, cannot add a line beyond the last one
+    TOTALLINES=`wc -l $LOCALSETTINGS | cut -d ' ' -f 1`;
+    [ "$MAXLINE" -gt "$TOTALLINES" ] && MAXLINE=0;
+    mwfupdate add "$MAXLINE" "$REQ_ONCE" "$WIKILABEL";
+  else
+    # apparently no extension is enabled yet; let's add the extension to the end of LocalSettings.php,
+    # or behind the existing extension section - if that exists
+    REMARK=`mwfupdate query "# enabled extensions" "$WIKILABEL";`;
+    if [ $? -gt 0 ]; then
+      # cannot find the extension section, lets create it
+      mwfupdate add 0 "# enabled extensions" "$WIKILABEL";
+      mwfupdate add 0 "$REQ_ONCE" "$WIKILABEL";
+    else
+      # let's find the line on which "# enabled extensions" was mentioned, and
+      # insert the enabled extension after it
+      REMLINE=`echo $REMARK | cut -d ' ' -f 1`;
+      let "REMLINE += 1";
+      # hmm... we run the risk that the remark was the absolute last line; let's check that
+      [ "$REMLINE" -gt "$TOTALLINES" ] && REMLINE=0;
+      mwfupdate add "$REMLINE" "$REQ_ONCE" "$WIKILABEL";
+    fi;
+  fi;
+}
+
+
+function print_extensions_notes {
+  # look for MWF_README in the extension's directory and print it
+  NOTESDIR=$1;
+  if [ -f "$NOTESDIR/$NOTESFILE" ]; then
+    reportprogress "found $NOTESFILE:";
+    SEPARATOR="   =============================================================================";
+    echo "$SEPARATOR";
+    while read LINE; do
+      echo "   $LINE";
+    done <"$NOTESDIR/$NOTESFILE";
+    echo "$SEPARATOR";
+  fi;
+}
+
+
+function walk_complexext_dirs {
+  WALKCMD="$1";
+  SOURCEBASE="`mwfls -q defaultcodesource`/$MWFCOMPLEXDIR/$EXT_DIR";
+  DESTBASE="`mwfls -q codepath[${WIKILABEL}]`/$MWFCOMPLEXDIR/$EXT_DIR";
+  # set up the "directory stack" that we're going to walk
+  # let every directory in the stack end with a slash
+  D[1]="/";
+  Dbottom=0;
+  Dtop=1;
+  while [ "$Dbottom" -lt "$Dtop" ]; do
+    let "Dbottom += 1";
+    SOURCE="${SOURCEBASE}${D[${Dbottom}]}";
+    DEST="${DESTBASE}${D[${Dbottom}]}";
+    [ "$WALKCMD" = "symlink" ] && mkdir "$DEST";
+    [ $? -gt 0 ] && print_error 1 "cannot create extension directory $DEST";
+    for F in `ls $SOURCE`; do
+      if [ -d "${SOURCE}$F" ]; then
+        # ah, another directory to add to the stack
+        let "Dtop += 1";
+        # store the full dirname from the SOURCEBASE upward
+        D[${Dtop}]="${D[${Dbottom}]}$F/";
+      else
+        # not a directory, just perform the requested command
+        if [ "$WALKCMD" = "delete" ]; then
+          # we're asked to delete ${DEST}$F, but we'll only do that if that
+          # is a symbolic link
+          SYMTEST="`file ${DEST}$F | grep "symbolic link"`";
+          [ $? -eq 0 ] && rm -f "${DEST}$F";
+        else
+          ln -s "${SOURCE}$F" "${DEST}$F";
+        fi;
+      fi;
+    done;
+  done;
+}
+
+
+function create_complexext_dirs {
+  walk_complexext_dirs "symlink";
+}
+
+function remove_complexext_dirs {
+  walk_complexext_dirs "delete";
+  # now the whole directory structure for this complex extension should be
+  # emptied; only directories with configuration files will remain. Delete all
+  # empty directories; they have been walked so array D[] is primed
+  # from 1 to Dtop
+  while [ "$Dtop" -gt 0 ]; do
+    DEST="${DESTBASE}${D[${Dtop}]}";
+    rmdir --ignore-fail-on-non-empty "$DEST";
+    debug "deleted $DEST";
+    let "Dtop -= 1";
+  done;
+}
+
+
+function enable_support_extensions {
+  SUPPORT=$1;
+  # count the number of support extensions; it's one more than the number of
+  # comma's in $SUPPORT
+  SUPPORT2=`echo $SUPPORT | tr -d ','`;
+  let "NUM_SUPPORT = ${#SUPPORT} - ${#SUPPORT2} + 1";
+  # there will be at least 1 support extension to enable
+  H=0;
+  while [ $H -lt $NUM_SUPPORT ]; do
+    let "H += 1";
+    SUPPORTEXTENSION=`echo $SUPPORT | cut -d ',' -f $H`;
+    # recursive call of mwfenext (relaxed to prevent errors if the
+    # additional extension is already enabled)
+    reportprogress "found additional extension required: $SUPPORTEXTENSION";
+    mwfenext --relaxed "$SUPPORTEXTENSION" "$WIKILABEL";
+  done;
+}
+
+
+function enable_extension_reqonce {
+  # for any extension type, this function creates and inserts the req_once line
+  # and prints the MWF extension notes, if there are any
+  MWFDIRTYPE="$1";
+  reportprogress "enabling $EXTTYPE extension $EXTENSION";
+  REQ_ONCE="require_once(\"$IP/$MWFDIRTYPE/$EXT_REQ\");";
+  insert_reqonceline;
+  EXTFULLDIR="`mwfls -q defaultcodesource`/$MWFDIRTYPE/`dirname $EXT_REQ`";
+  print_extensions_notes "$EXTFULLDIR";
+}
+
+
+function disable_extension_reqonce {
+  # for any extension type, this function deletes the req_once line
+  MWFDIRTYPE="$1";
+  reportprogress "disabling $EXTTYPE extension $EXTENSION";
+  REQ_ONCE="require_once(\"$IP/$MWFDIRTYPE/$EXT_REQ\");";
+  QUERY=`mwfupdate query "$REQ_ONCE" "$WIKILABEL" | cut -d ' ' -f 1`;
+  mwfupdate remove "$QUERY" "$WIKILABEL";
+}
+
+
+function enable_extension {
+  if [ ${#EXT_ADDITIONAL} -gt 0 ]; then
+    # apparently we need support extensions
+    enable_support_extensions "$EXT_ADDITIONAL";
+  fi;
+  case $EXTTYPE in
+    support)  enable_extension_reqonce "$MWFSIMPLEDIR";;
+    simple)   enable_extension_reqonce "$MWFSIMPLEDIR";;
+    complex)  create_complexext_dirs;
+              enable_extension_reqonce "$MWFCOMPLEXDIR";;
+    *)        print_error 1 "$EXTENSION is of unknown extension type $EXTTYPE";;
+  esac;
+}
+
+
+function disable_extension {
+  case $EXTTYPE in
+    support)  disable_extension_reqonce "$MWFSIMPLEDIR";;
+    simple)   disable_extension_reqonce "$MWFSIMPLEDIR";;
+    complex)  disable_extension_reqonce "$MWFCOMPLEXDIR";
+              remove_complexext_dirs;;
+    *)        print_error 1 "$EXTENSION is of unknown extension type $EXTTYPE";;
+  esac;
+}
+
+
+######################################################################
+
+# Handle all parameters, if any
+[ $# -gt 3 ] && print_error 1 "too many parameters ($#)";
+
+unset EXTENSION;
+unset WIKILABEL;
+RELAXED="false";
+
+while [ $# -gt 0 ]; do
+  case $1 in
+    --copyright)  print_version; print_copyright; exit 0;;
+    -V|--version) print_version; exit 0;;
+    -h|--help)    print_help; exit 0;;
+    -r|--relaxed) shift; RELAXED="true";;
+    *)            # test if EXTENSION is empty
+                  if [ ! "$EXTENSION" ]; then
+                    EXTENSION=$1; shift;
+                     chk_extension_exists;
+                  else
+                    # apparently we've already interpreted a
+                    # parameter as extension, so this must be
+                     # the wiki label
+                    if [ ! "$WIKILABEL" ]; then
+                       WIKILABEL=$1; shift;
+                       chk_wikilabel;
+                       chk_extension_enabled;
+                    else
+                      print_error 1 "unknown parameter $1";
+                    fi;
+                  fi;;
+  esac;
+done;
+
+[ -z "$EXTENSION" ] && print_error 1 "no extension specified";
+[ -z "$WIKILABEL" ] && print_error 1 "no wiki instance specified";
+
+# Let's dissect the extension description we've collected
+EXTTYPE=`echo $EXTENSION_DESCR | cut -d ' ' -f 2`;
+EXT_REQ=`echo $EXTENSION_DESCR | cut -d ' ' -f 3`;
+EXT_ADDITIONAL=`echo $EXTENSION_DESCR | cut -d ' ' -f 4`;
+EXT_DIR=`echo $EXT_REQ | cut -d '/' -f 1`;
+  
+if [ "$SCRIPTNAME" = "$DISABLENAME" ]; then
+  disable_extension;
+else
+  enable_extension;
+fi;
+
+exit 0

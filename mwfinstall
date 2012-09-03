@@ -1,0 +1,458 @@
+#!/bin/bash
+ 
+# Create or refresh the MWF initial configuration
+# use -f to force MWF config refresh (which attempts to migrate existing instance settings
+# from the original mediawikifarm.conf to the new one)
+
+###################################################################################################
+function print_copyright {
+  echo "Copyright 2009, 2010 Jan Schoonderbeek";
+  echo;
+  echo "This file is part of MediaWikiFarm (MWF).";
+  echo;
+  echo "MediaWikiFarm is free software: you can redistribute it and/or modify it under the terms";
+  echo "of the GNU General Public License as published by the Free Software Foundation, either";
+  echo "version 3 of the License, or (at your option) any later version.";
+  echo;
+  echo "MediaWikiFarm is distributed in the hope that it will be useful, but WITHOUT ANY WARRANTY;";
+  echo "without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.";
+  echo "See the GNU General Public License for more details.";
+  echo;
+  echo "You should have received a copy of the GNU General Public License along with MediaWikiFarm.";
+  echo "If not, see <http://www.gnu.org/licenses/>.";
+}
+###################################################################################################
+
+BUILDDATE="2010-01-17";
+VER="r00010";
+ 
+SCRIPTNAME=`basename $0`;
+ENEXTNAME="mwfenext";
+DISEXTNAME="mwfdisext";
+SCRIPTDIR=`dirname $0`;
+MWFCMDDIR="/usr/bin";
+MWFCONFDIR="/etc/mediawikifarm";
+MWFCONFIG="$MWFCONFDIR/mediawikifarm.conf";
+MWFEXTCONFIG="$MWFCONFDIR/extensions.available";
+MWFCODEBASEDIR="/var/lib/mediawikifarm";
+MWFDATA_BASEDIR="/var/lib/mediawikifarm";
+MWFSIMPLEDIR="extensions";
+MWFCOMPLEXDIR="complexextensions";
+MWFNULLFILE="/tmp/mwf_null";
+FORCE="false";
+DEBIANSOURCE="/usr/share/mediawiki";
+OTHERSOURCE="/opt/mediawiki";
+ 
+function print_help {
+  echo "$SCRIPTNAME [-f|--force] [[-c|--code-base-directory] <mwfcodebasedir>]";
+  echo "  [[-d|--data-base-directory] <mwfdata-basedir>] [[-m|--mediawiki-version] <MW-version>";
+  echo "  [[-s|--source-directory] <mwsourcedir>] [[-w|--web-server-user] <webserver-user>]";
+  echo "  prepares directories and configuration file for MediaWikiFarm(MWF) solution.";
+  echo "  -f:        force initialization of current MWF configuration";
+  echo "             CAUTION! OVERWRITES EXISTING MWF CONFIGS!";
+  echo "  -c <DIR>:  use <DIR> as MWF code base directory";
+  echo "             (default is $MWFCODEBASEDIR)";
+  echo "  -d <DIR>:  use <DIR> as MWF data base directory";
+  echo "             (default is $MWFDATA_BASEDIR)";
+  echo "  -m <TYPE>: use create.template.<TYPE> as create-template (no default!)";
+  echo "             If not specified on the command line, will show all possible choices";
+  echo "  -s <DIR>:  use <DIR> as MediaWiki code source directory";
+  echo "             (default depends on operating system:";
+  echo "              - $DEBIANSOURCE for Debian distributions";
+  echo "              - $OTHERSOURCE for other GNU/Linux distributions)";
+  echo "  -w <USR>: use <USR> as the user(:group) that runs the web server (e.g. www-data:www-data or apache:apache)";
+  echo "            note: MWF commands can be run either as root or as this particular user.";
+  echo "$SCRIPTNAME [-V | --version | -h | --help ]";
+  echo "  -V, --version:";
+  echo "            print build version and build date, and exit";
+  echo "  -h, --help:";
+  echo "            print this help text and exit";
+}
+
+
+function print_error {
+  E_CODE="$1"; shift;
+  MESSAGE="$@";
+  echo "error: $MESSAGE";
+  exit "$E_CODE";
+}
+
+
+function print_version {
+  echo "build $VER date $BUILDDATE";
+}
+
+
+function reportprogress {
+  echo " - $@";
+}
+
+
+function chk_os {
+  # if not specified at the command line, check under which OS we're running
+  if [ -z "$OS" ]; then
+    # gotta find the OS
+    if [ -f /etc/debian_version ]; then
+      OS="DEBIAN";
+    else
+      OS="OTHER";
+    fi;
+  else
+    # translate specified OS to all caps
+    OS=`tr "[:lower:]" "[:upper:]" < echo "$OS"`;
+  fi;
+  # final check: do we know the OS?
+  # also: set OS specific defaults if not specified at the cmd line
+  case "$OS" in
+    DEBIAN) reportprogress "installing for Debian";
+            [ -z "$MWSOURCEDIR" ] && MWSOURCEDIR="$DEBIANSOURCE";
+            [ -z "$WEBOWN" ] && WEBOWN="www-data:www-data";;
+    OTHER)  reportprogress "installing for generic GNU/Linux distribution";
+            [ -z "$MWSOURCEDIR" ] && MWSOURCEDIR="$OTHERSOURCE";
+            [ -z "$WEBOWN" ] && WEBOWN="apache:apache";;
+    *)      reportprogress "unknown OS $OS specified - installing for generic GNU/Linux distribution";
+            OS="OTHER";
+            [ -z "$MWSOURCEDIR" ] && MWSOURCEDIR="$OTHERSOURCE";
+            [ -z "$WEBOWN" ] && WEBOWN="apache:apache";;
+  esac;
+}
+
+
+function chk_WEBOWN {
+  # if WEBOWN contains a dot (like WEBOWN.WEBOWN), replace it with
+  # a colon (like WEBOWN:WEBOWN)
+  WEBOWN=`echo $WEBOWN | tr '.' ':'`;
+  
+  # Split WEBOWN in a user and group part
+  WEBUSER=`echo $WEBOWN | cut -d ':' -f 1`;
+  WEBGROUP=`echo $WEBOWN | cut -d ':' -f 2`;
+  # Check if the WEBUSER and WEBGROUP exist
+  grep "$WEBUSER" /etc/passwd > /dev/nul;
+  [ $? -gt 0 ] && print_error 1 "user $WEBUSER doesn't exist locally";
+  if [ "${#WEBGROUP}" -gt 0 ]; then
+    # there is a web user group specified
+    grep "$WEBGROUP" /etc/group > /dev/nul;
+    [ $? -gt 0 ] && print_error 1 "group $WEBGROUP doesn't exist locally";
+  fi;
+  reportprogress "assuming webserver operated by $WEBOWN";
+}
+
+
+function chk_already_installed {
+  # first check if MWF has been installed previously. Of course if an existing
+  # code base dir and/or data base dir is specified, then mwfinstall assumes (perhaps
+  # incorrectly) that a previous installation exists
+  INSTALLED="false";
+  [ -d "$MWFCONFDIR" ] && INSTALLED="true";
+  [ -d "$MWFCODEBASEDIR" ] && INSTALLED="true";
+  [ -d "$MWFDATA_BASEDIR" ] && INSTALLED="true";
+  if [ "$INSTALLED" = "true" ]; then
+    reportprogress "possible previous installation of MWF detected";
+    if [ "$FORCE" = "true" ]; then
+      read -p "overwrite (yes/no)? ";
+      OVERWRITE=`echo "$REPLY" | tr "[:lower:]" "[:upper:]"`;
+      if [ "x$OVERWRITE" = "xYES" ]; then
+        echo "OK, overwriting current configuration";
+      else
+        print_error 1 "aborting $SCRIPTNAME";
+      fi;
+    else
+      print_error 1 "use -f to force refresh/overwrite of configuration";
+    fi;
+  fi;
+}
+
+
+function no_MW_found {
+	echo "$@;";
+    echo "install mediawiki, or point $SCRIPTNAME to the MediaWiki directory using the -s";
+    echo "or --source-directory option. See $SCRIPTNAME --help for help.";
+    exit 1;
+}
+
+
+function chk_sourcedirectory {
+  [ -d "$MWSOURCEDIR" ] || \
+      no_MW_found "MediaWiki source directory $MWSOURCEDIR not found";
+  # a real MediaWiki source dir has either index.php or index.php5 (or both)
+  INDEXFOUND="false";
+  for F in index.php index.php5; do
+    if [ -f "$MWSOURCEDIR/$F" ]; then
+      INDEXFOUND="$F";
+      break;
+    fi;
+  done;
+  if [ "$INDEXFOUND" = "false" ]; then
+    no_MW_found "MediaWiki source directory $MWSOURCEDIR has no index.php5 or index.php";
+  fi;
+  # Now check if the index.php that we've found is really a MediaWiki file
+  grep MediaWiki "$MWSOURCEDIR/$F" > /dev/nul;
+  [ $? -gt 0 ] && \
+      no_MW_found "$MWSOURCEDIR/$F does not seem to be a MediaWiki file"
+  reportprogress "using source directory $MWSOURCEDIR";
+}
+
+
+function refresh_dir {
+  # sets permisisons, and recursively sets owner
+  OWNER=$1; RDIR=$2;
+  chown -R "$OWNER" "$RDIR";
+  chmod 755 "$RDIR";
+}
+
+
+function create_mwfdir {
+  OWNER=$1; RDIR=$2;
+  mkdir -p "$RDIR";
+  if [ $? -gt 0 ]; then
+    print_error 1 "could not create $RDIR - halting";
+  fi;
+  chown "$OWNER" "$RDIR";
+  chmod 755 "$RDIR";
+}
+
+
+function make_directories {
+  # prepare extensions directories in source dir; 
+  # simpledir will most likely already exist; complex dir
+  # is likely new
+  DIRLIST="$MWSOURCEDIR/$MWFSIMPLEDIR $MWSOURCEDIR/$MWFCOMPLEXDIR";
+  for MWFDIR in $DIRLIST; do
+    if [ -d "$MWFDIR" ]; then
+      # apparently the directory already exists; refresh rights
+      refresh_dir "$WEBUSER:$WEBGROUP" "$MWFDIR";
+    else
+      # directory does not yet exist
+      create_mwfdir "$WEBUSER:$WEBGROUP" "$MWFDIR";
+    fi;
+    reportprogress "prepared extension directory $MWFDIR";
+  done;
+  # create a list of all directories to make
+  DIRLIST="$MWFCONFDIR $MWFCODEBASEDIR";
+  [ "x$MWFCODEBASEDIR" = "x$MWFDATA_BASEDIR" ] || \
+    DIRLIST="$DIRLIST $MWFDATA_BASEDIR";
+  # now cycle thru that list and create each dir
+  for MWFDIR in $DIRLIST; do
+    if [ -d "$MWFDIR" ]; then
+      # apparently the directory already exists; refresh rights,
+      # but only if this is a forced refresh
+      if [ "$FORCE" = "true" ]; then
+        refresh_dir "$WEBUSER:$WEBGROUP" "$MWFDIR";
+      fi;
+    else
+      # default situation: directory does not yet exist
+      create_mwfdir "$WEBUSER:$WEBGROUP" "$MWFDIR";
+    fi;
+    reportprogress "prepared directory $MWFDIR";
+  done;
+}
+
+
+function make_tempfile {
+  touch "$MWFNULLFILE";
+  [ $? -gt 0 ] && print_error 1 "could not create $MWFNULLFILE";
+  chown "$WEBOWN" "$MWFNULLFILE";
+  [ $? -gt 0 ] && print_error 1 "could not set owner $WEBOWN on $MWFNULLFILE";
+  chmod 660 "$MWFNULLFILE"
+}
+
+function make_mwfconfig {
+  BACKUPMADE="false";
+  if [ -f "$MWFCONFIG" ]; then
+    BACKUPMADE="true";
+    reportprogress "creating backup for existing $MWFCONFIG";
+    [ -f "$MWFCONFIG.bak" ] && rm "$MWFCONFIG.bak";
+    mv "$MWFCONFIG" "$MWFCONFIG.bak";
+    [ -f "$MWFCONFIG" ] && print_error 1 "cannot create backup - exiting";
+  fi;
+  touch "$MWFCONFIG";
+  chown "$WEBUSER":"$WEBGROUP" "$MWFCONFIG";
+  chmod 664 "$MWFCONFIG";
+  [ ! -f "$MWFCONFIG" ] && print_error 1 "cannot create fresh $MWFCONFIG - exiting";
+  echo "# default mediawiki code source directory" >> "$MWFCONFIG";
+  echo "defaultcodesource = $MWSOURCEDIR" >> "$MWFCONFIG";
+  echo "# default wikifarm code base directory" >> "$MWFCONFIG";
+  echo "defaultcodepath = $MWFCODEBASEDIR" >> "$MWFCONFIG";
+  echo "# default wikifarm data base directory" >> "$MWFCONFIG";
+  echo "defaultdatapath = $MWFDATA_BASEDIR" >> "$MWFCONFIG";
+  echo "# operating system specific settings follow this OS" >> "$MWFCONFIG";
+  echo "operatingsystem = $OS" >> "$MWFCONFIG";
+  echo "# web server user (or user:group) for this system" >> "$MWFCONFIG";
+  echo "webserveruser = $WEBOWN" >> "$MWFCONFIG";
+  echo "" >> "$MWFCONFIG";
+  echo "# MediaWikiFarm instances" >> "$MWFCONFIG";
+  reportprogress "created $MWFCONFIG";
+  if [ "$BACKUPMADE" = "true" ]; then
+    # copy all instances from the backupfile into the new file
+    # check which lines we don't want
+    reportprogress "copying lines from backup configuration into $MWFCONFIG";
+    while read LINE; do
+      # number of checks
+      if [ ${#LINE} -gt 1 ]; then
+        # so length is more than 1 char
+        if [ ! "x${LINE:0:1}" = "x#" ]; then
+          # so first char is not #
+          if [ ! "x${LINE:0:18}" = "xdefaultcodesource " ]; then
+            if [ ! "x${LINE:0:16}" = "xdefaultcodepath " ]; then
+              if [ ! "x${LINE:0:16}" = "xdefaultdatapath " ]; then
+                if [ ! "x${LINE:0:16}" = "xoperatingsystem " ]; then
+                  if [ ! "x${LINE:0:14}" = "xwebserveruser " ]; then
+                    echo "$LINE" >> "$MWFCONFIG";
+                  fi;
+                fi;
+              fi;
+            fi;
+          fi;
+        fi;
+      fi;
+    done <"$MWFCONFIG.bak";
+  fi;
+}
+
+
+function make_extensionconfig {
+  if [ -r "$MWFEXTCONFIG" ]; then
+    reportprogress "leaving alone existing $MWFEXTCONFIG";
+  else
+    touch "$MWFEXTCONFIG";
+    [ ! -f "$MWFEXTCONFIG" ] && print_error 1 "cannot create fresh $MWFEXTCONFIG - exiting";
+    chown "$WEBUSER":"$WEBGROUP" "$MWFEXTCONFIG";
+    chmod 664 "$MWFEXTCONFIG";
+    echo "#name                        ext_type   require_once                     additional" >> "$MWFEXTCONFIG";
+    reportprogress "created $MWFEXTCONFIG";
+  fi;
+}
+
+
+function copy_commandfiles {
+  reportprogress "copying all MWF commands to $MWFCMDDIR";
+  for F in `ls $SCRIPTDIR/mwf*`; do
+    MWFCMD=`basename $F`;
+    # we don't need mwfinstall copied to /usr/bin
+    # but all the other mwfcommands we do need
+    if [ ! "$MWFCMD" = "$SCRIPTNAME" ]; then
+      reportprogress "  $MWFCMD";
+      cp "$F" "$MWFCMDDIR";
+      chown "$WEBUSER":"$WEBGROUP" "$MWFCMDDIR/$F";
+      chmod 750 "$MWFCMDDIR/$F";
+    fi;
+  done;
+  # symlink the mwfenext commmand to create the mwfdisext command
+  # (don't need to symlink if it already exists, e.g. when reinstalling)
+  [ -r "$MWFCMDDIR/$DISEXTNAME" ] || \
+    ln -s "$MWFCMDDIR/$ENEXTNAME" "$MWFCMDDIR/$DISEXTNAME"
+}
+
+
+function chk_mw_version {
+  # we must check if we have a template for the specified MW version, but the response
+  # differs when we're running interactively or not
+  INTERACTIVE=$1;
+  if [ ! -f "$SCRIPTDIR/create.template.$MWVERSION" ]; then
+    MESSAGE="cannot find file create.template.$MWVERSION";
+    if [ "x$INTERACTIVE" = "xfalse" ]; then
+      print_error 1 "$MESSAGE";
+    else
+      reportprogress "info: $MESSAGE";
+    fi;
+    unset MWVERSION;    
+  fi;
+}
+
+
+function ask_mw_version {
+  while [ -z "$MWVERSION" ]; do
+    reportprogress "you need to specify which MediaWiki template to use."
+    echo "   available are:"
+    for F in `ls $SCRIPTDIR/create.template.*`; do
+      G=`basename $F`;
+      # strip the leading "create.template."
+      G="${G:16}";
+      echo "    $G";
+    done;
+    echo -n "Your choice: ";
+    read MWVERSION;
+    # call MWVERSION check function, tell it we're interactive
+    chk_mw_version "true";
+  done;
+}
+
+
+function copy_templates {
+  reportprogress "copying the webserver template";
+  cp "$SCRIPTDIR/apache.template" "$MWFCONFDIR";
+  if [ -z "$MWVERSION" ]; then
+    ask_mw_version;
+  else
+    # call MWVERSION check function, tell it we're not interactive
+    chk_mw_version "false";
+  fi;
+  reportprogress "copying the MediaWiki create template";
+  cp "$SCRIPTDIR/create.template.$MWVERSION" "$MWFCONFDIR/create.template";
+}
+
+
+######################################################################
+# Handle all parameters, if any
+while [ $# -gt 0 ]; do
+   case $1 in
+      --copyright)  print_version; print_copyright; exit 0;;
+      -V|--version) print_version; exit 0;;
+      -h|--help)    print_help; exit 0;;
+      -f|--force)   shift; FORCE="true";;
+      -c|--code-base-directory)
+           if [ $# -lt 2 ]; then
+             print_error 1 "missing parameter after $1";
+           else
+             shift; MWFCODEBASEDIR=$1; shift
+           fi;;
+      -d|--data-base-directory)
+           if [ $# -lt 2 ]; then
+             print_error 1 "missing parameter after $1";
+           else
+             shift; MWFDATA_BASEDIR=$1; shift
+           fi;;
+      -m|--mediawiki-version)
+           if [ $# -lt 2 ]; then
+             print_error 1 "missing parameter after $1";
+           else
+             shift; MWVERSION=$1; shift
+           fi;;
+      -s|--source-directory)
+           if [ $# -lt 2 ]; then
+             print_error 1 "missing parameter after $1";
+           else
+             shift; MWSOURCEDIR=$1; shift
+           fi;;
+      -o|--operating-system)
+           if [ $# -lt 2 ]; then
+             print_error 1 "missing parameter after $1";
+           else
+             shift; OS=$1; shift
+           fi;;
+      -w|--web-server-user)
+           if [ $# -lt 2 ]; then
+             print_error 1 "missing parameter after $1";
+           else
+             shift; WEBOWN=$1; shift
+           fi;;
+      *)   print_error 3 "unknown parameter $1";;
+   esac;
+done;
+
+chk_os;
+chk_WEBOWN;
+chk_already_installed;
+ 
+# We passed the above check, so either this is a new install, or
+# a re-install with force overwrite (look in $FORCE to know which)
+ 
+chk_sourcedirectory;
+make_directories;
+make_tempfile;
+make_mwfconfig;
+make_extensionconfig;
+copy_commandfiles;
+copy_templates;
+reportprogress "succesfully completed $SCRIPTNAME";
+exit 0
